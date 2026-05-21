@@ -1,0 +1,114 @@
+# zeppelin — Claude Code Plugin
+
+让 Claude Code 在你授权下安全地在 Apache Zeppelin 上跑 SQL / Spark / PySpark / Shell。
+**自带风险评估**：危险操作（DDL、无 WHERE 的 DML、`.write` / `saveAsTable`、`rm -rf` 等）会先弹确认。
+
+不依赖任何外部服务，也不依赖任何 pip 包，Python 3.9+ stdlib 即可。
+
+---
+
+## 安装
+
+```
+/plugin marketplace add zweite/claude-plugins
+/plugin install zeppelin@zweite-tools
+```
+
+私有仓库也行，确保本机有对应的 git 凭据（ssh-agent / token）。
+本地调试可以直接指向目录：`/plugin marketplace add /path/to/claude-plugins`。
+
+---
+
+## 配置
+
+至少需要 Zeppelin 的地址 + 账号：
+
+```bash
+export ZEPPELIN_BASE_URL=http://zeppelin.example.com:30090
+export ZEPPELIN_USERNAME=you
+export ZEPPELIN_PASSWORD='…'
+```
+
+或者写文件 `~/.zeppelin/config.json`（注意 chmod 600）：
+
+```json
+{
+  "base_url": "http://zeppelin.example.com:30090",
+  "username": "you",
+  "password": "…"
+}
+```
+
+可选环境变量：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `ZEPPELIN_NOTE_DIR` | `__skill/zeppelin` | 新建 note 放在 Zeppelin workspace 的哪个目录下，例如 `fin-eng/adhoc` |
+| `ZEPPELIN_KEEP_NOTES` | `0` | `1` = 跑完保留 note；默认跑完即删 |
+| `ZEPPELIN_AUTO_APPROVE_LEVEL` | `safe` | `safe` 只放纯读；`low` / `medium` / `high` 逐级放宽。高于这个等级的会弹确认 |
+| `ZEPPELIN_TIMEOUT_SECONDS` | `300` | 单次轮询超时 |
+| `ZEPPELIN_POLL_INTERVAL_SECONDS` | `1.5` | 轮询间隔 |
+
+验证（`${CLAUDE_PLUGIN_ROOT}` 是 Claude Code 注入的插件根目录）：
+
+```bash
+python3 "$CLAUDE_PLUGIN_ROOT/scripts/zeppelin.py" test-conn
+# {"ok": true, "principal": {...}, "elapsed_seconds": 0.42}
+```
+
+---
+
+## 使用
+
+装好之后在 Claude Code 里直接说：
+
+> 用 zeppelin 看一下 `bi.dws_user_active_d` 今天的活跃用户数
+
+Claude 会自己拼 `%spark.sql`、调风险打分、命中高风险时让你确认、跑完把结果摆出来。
+
+---
+
+## 风险等级
+
+| 等级 | 例子 |
+| --- | --- |
+| `safe` | `SELECT`, `SHOW`, `DESCRIBE`, `EXPLAIN`, `USE` |
+| `low` | `UPDATE … WHERE …`、`DELETE … WHERE …`、未识别但看起来是 SQL 的 |
+| `medium` | `INSERT INTO`, `MERGE`, 未识别的代码段 |
+| `high` | 所有 DDL（DROP/TRUNCATE/ALTER/CREATE/REPLACE/GRANT/REVOKE）、`INSERT OVERWRITE`、无 WHERE 的 UPDATE/DELETE、`.write` / `saveAsTable` / `.save(`、`rm -rf` / `hdfs dfs -rm` |
+
+打分器是**保守**的（宁误报不漏报），Claude 还会在上面叠加一层语义判断：表名像不像生产、时间是不是凌晨、是不是 PII 表，等等，命中就会**升级**等级，不会降级。
+
+---
+
+## CLI 直接用（不经过 Claude）
+
+`$ROOT` 指向插件目录（装好后在 `~/.claude/plugins/...`，或就用源码目录的 `plugins/zeppelin`）。
+
+```bash
+# 临时查询：提交 + 轮询 + 跑完删 note
+python3 "$ROOT/scripts/zeppelin.py" exec --magic '%spark.sql' --code 'SELECT 1'
+
+# 落到指定目录、保留 note
+ZEPPELIN_NOTE_DIR=fin-eng/adhoc \
+python3 "$ROOT/scripts/zeppelin.py" exec --magic '%spark.sql' --code 'SELECT 1' --keep-note
+
+# 只提交不等
+python3 "$ROOT/scripts/zeppelin.py" submit --magic '%pyspark' --code 'print("hi")'
+
+# 轮询 / 清理
+python3 "$ROOT/scripts/zeppelin.py" poll --note 2K... --para 20... --timeout 600
+python3 "$ROOT/scripts/zeppelin.py" list-notes
+python3 "$ROOT/scripts/zeppelin.py" delete-note --note 2K...
+
+# 单独打分（不联网）
+echo 'DROP TABLE foo' | python3 "$ROOT/scripts/risk.py" --magic '%spark.sql'
+```
+
+---
+
+## 已知限制
+
+- CLI 不直接暴露「往已有 note 里追加 paragraph」的子命令——`exec` 每次开新 note。需要多 paragraph 共享 SparkContext 时，目前要走 `submit` + 自行拼 REST，或等加一个 `append-paragraph` 子命令。
+- 风险打分基于正则；很复杂的动态 SQL（字符串拼接、嵌套）可能漏判，所以才需要 Claude 在上面再判一层。
+- 凭据只走 env 或本地配置文件，不支持 secret manager / OIDC。

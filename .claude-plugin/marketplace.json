@@ -1,0 +1,14 @@
+{
+  "name": "zweite-tools",
+  "description": "Self-hosted Claude Code plugins for data tooling.",
+  "owner": {
+    "name": "zweite"
+  },
+  "plugins": [
+    {
+      "name": "zeppelin",
+      "source": "./plugins/zeppelin",
+      "description": "Run SQL / Spark / PySpark / shell paragraphs on Apache Zeppelin with built-in risk control."
+    }
+  ]
+}

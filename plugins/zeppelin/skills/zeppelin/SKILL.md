@@ -1,0 +1,185 @@
+---
+name: zeppelin
+description: Run SQL / Spark / PySpark / shell paragraphs on an Apache Zeppelin instance with built-in risk control. Use this skill whenever the user wants to query, transform, or inspect data via Zeppelin — the skill handles login, notebook lifecycle, polling for results, AND classifies risk before execution, asking the user to confirm high-risk operations.
+---
+
+# Zeppelin Skill
+
+You execute work on an Apache Zeppelin instance on the user's behalf via two
+helper scripts. Everything you do MUST follow the workflow in this file.
+Do not skip the risk-gate, do not bypass the AskUserQuestion confirmation.
+
+## Tools you have
+
+- `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zeppelin.py <subcmd>` — Zeppelin REST CLI.
+  All output is JSON on stdout. Exit code != 0 means failure.
+- `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/risk.py --magic <m>` — risk classifier.
+  Takes paragraph body on stdin, prints JSON.
+
+`${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to this plugin's root directory.
+
+## Credentials
+
+The CLI reads credentials from env vars (preferred) or `~/.zeppelin/config.json`:
+
+```
+ZEPPELIN_BASE_URL=http://host:port[/basePath]
+ZEPPELIN_USERNAME=user
+ZEPPELIN_PASSWORD=pass
+```
+
+Optional tuning:
+```
+ZEPPELIN_NOTE_DIR=__skill/zeppelin    # workspace dir new notes are created under
+ZEPPELIN_KEEP_NOTES=0                 # 1 = keep notes after run instead of deleting
+ZEPPELIN_TIMEOUT_SECONDS=300          # poll cap (default 300)
+ZEPPELIN_POLL_INTERVAL_SECONDS=1.5    # poll cadence
+ZEPPELIN_AUTO_APPROVE_LEVEL=safe      # see risk gate below
+```
+
+If creds are missing, run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zeppelin.py test-conn`
+once to surface the exact error and tell the user what to set. Do NOT prompt
+the user for passwords — they should put them in env or the config file.
+
+## Workflow (mandatory)
+
+Every paragraph submission goes through these steps. No exceptions.
+
+### 1. Pick a magic
+
+Translate the user's intent into a Zeppelin paragraph:
+
+| User intent                          | Magic         |
+| ------------------------------------ | ------------- |
+| SQL on the cluster                   | `%spark.sql`  |
+| PySpark code                         | `%pyspark`    |
+| Scala / Spark code                   | `%spark`      |
+| Shell on the driver                  | `%sh`         |
+
+If the user says "run this SQL" without context, default to `%spark.sql`.
+
+### 2. Classify risk
+
+Pipe the paragraph body into the classifier:
+
+```bash
+echo "$CODE" | python3 ${CLAUDE_PLUGIN_ROOT}/scripts/risk.py --magic '%spark.sql'
+```
+
+The output is:
+```json
+{
+  "level": "safe|low|medium|high",
+  "factors": ["ddl_drop", ...],
+  "rationale": "...",
+  "operations": ["DROP", "SELECT"]
+}
+```
+
+**Then layer your own judgment on top.** The classifier is a floor, not a
+ceiling. Read the actual SQL/code and consider:
+- Does the table name look like production (no `dev_`/`test_`/`tmp_`/`stg_` prefix, no `_test` suffix)?
+- Is this hitting a fact table or a shared dimension that other pipelines depend on?
+- Is the time window unusual (e.g. UTC small hours, weekends)?
+- Does the code launch a long-running job (suspiciously broad scans, cross joins)?
+- Does it touch financial / billing / user-PII tables?
+- Is there an embedded `spark.sql("...")` the regex missed?
+
+If any of these apply, **upgrade** the level (e.g. from `medium` to `high`)
+and append your reasoning to the factors list. Never downgrade what the
+classifier produced.
+
+### 3. Apply the auto-approve threshold
+
+The user controls the gate via `ZEPPELIN_AUTO_APPROVE_LEVEL`:
+
+| Threshold (env)   | Auto-runs without asking |
+| ----------------- | ------------------------ |
+| `safe` (default)  | only `safe`              |
+| `low`             | `safe`, `low`            |
+| `medium`          | `safe`, `low`, `medium`  |
+| `high`            | everything (NOT recommended) |
+
+If the final risk level is **above** the threshold, you MUST call
+`AskUserQuestion` with the full SQL/code and the risk factors before
+calling `zeppelin.py submit` or `exec`. Do not paraphrase the SQL when
+asking — show it verbatim. Example question shape:
+
+```
+question: "Run this `high` risk paragraph on Zeppelin?"
+options:
+  - "Run it"
+  - "Show me a dry-run first"
+  - "Cancel"
+```
+
+Include in the question body: the magic, the operations the classifier
+found, your additional rationale, and the affected tables / paths.
+
+### 4. Execute and report
+
+Once cleared (auto or after confirmation):
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zeppelin.py exec \
+  --magic '%spark.sql' \
+  --code "$CODE"
+```
+
+`exec` submits, polls until terminal, and (by default) deletes the temporary
+note. The note is created under `ZEPPELIN_NOTE_DIR` (default `__skill/zeppelin`).
+Pass `--keep-note` to retain it, or set `ZEPPELIN_KEEP_NOTES=1` to keep by
+default. Use `--no-keep-note` to force-delete even when the env default keeps.
+
+Output JSON shape:
+```json
+{
+  "status": "FINISHED" | "ERROR" | "ABORT",
+  "is_table": true,
+  "rows": [{"col": "val", ...}, ...],   // null when not a TABLE result
+  "text": "stdout / tracebacks",
+  "note_id": "2K...",
+  "paragraph_id": "20...",
+  "note_name": "..."
+}
+```
+
+Report to the user:
+- On `FINISHED` + `is_table`: show first 20 rows as a markdown table; mention total row count.
+- On `FINISHED` + non-table: show the `text` (likely PySpark stdout or `df.show()` output).
+- On `ERROR` / `ABORT`: show `text` (Zeppelin puts the traceback there) and offer to diagnose / retry with a fix.
+- On `timed_out: true`: tell the user the run is still in flight, give them the `note_id` + `paragraph_id` so they can poll later with `zeppelin.py poll`.
+
+## Multi-paragraph sessions
+
+For exploratory work where the user wants several paragraphs sharing one
+SparkContext, use `submit` then `poll` repeatedly with the same note id.
+Today the CLI doesn't expose a "session" abstraction — every `exec` call
+creates a fresh note. If the user explicitly asks for a multi-paragraph
+notebook, do:
+
+1. `zeppelin.py submit --magic ... --code ...` → note_id, para_id
+2. `zeppelin.py poll --note <id> --para <id>` → result
+3. To add another paragraph in the same note: use `submit` with a name like
+   `notebook/<existing-note-id>` and call the Zeppelin REST endpoint
+   `POST /api/notebook/{noteId}/paragraph` — this isn't exposed by the CLI
+   yet, so tell the user it needs a tiny CLI extension and offer to add it.
+
+## What NOT to do
+
+- Do NOT execute anything above the threshold without confirmation.
+- Do NOT ever print or log credentials. The CLI already redacts ticket
+  values from errors; if you echo a CLI error, you don't need to redact
+  again, but never insert credentials into prompts.
+- Do NOT silently retry a paragraph that errored — surface the error,
+  offer a fix, and re-classify any new SQL through the risk gate.
+- Do NOT create notebooks the user didn't ask for. The skill auto-cleans
+  the temp note after `exec`; only set `--keep-note` when the user asks.
+
+## Quick sanity check
+
+If you're unsure the skill is wired up, run:
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zeppelin.py test-conn
+```
+Output `{"ok": true, "principal": ..., "elapsed_seconds": ...}` = good.
