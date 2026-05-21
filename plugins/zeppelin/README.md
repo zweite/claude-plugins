@@ -29,25 +29,29 @@ export ZEPPELIN_USERNAME=you
 export ZEPPELIN_PASSWORD='…'
 ```
 
-或者写文件 `~/.zeppelin/config.json`（注意 chmod 600）：
+或者写文件 `~/.zeppelin/config.json`（注意 chmod 600）。除了凭据，下表里带 config.json key 的可选项也能写进来：
 
 ```json
 {
   "base_url": "http://zeppelin.example.com:30090",
   "username": "you",
-  "password": "…"
+  "password": "…",
+  "note_dir": "fin-eng/adhoc",
+  "keep_notes": true,
+  "timeout_seconds": 600,
+  "poll_interval_seconds": 1.5
 }
 ```
 
-可选环境变量：
+可选项（**环境变量优先于 config.json，都没有才用默认值**）：
 
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `ZEPPELIN_NOTE_DIR` | `__skill/zeppelin` | 新建 note 放在 Zeppelin workspace 的哪个目录下，例如 `fin-eng/adhoc` |
-| `ZEPPELIN_KEEP_NOTES` | `0` | `1` = 跑完保留 note；默认跑完即删 |
-| `ZEPPELIN_AUTO_APPROVE_LEVEL` | `safe` | `safe` 只放纯读；`low` / `medium` / `high` 逐级放宽。高于这个等级的会弹确认 |
-| `ZEPPELIN_TIMEOUT_SECONDS` | `300` | 单次轮询超时 |
-| `ZEPPELIN_POLL_INTERVAL_SECONDS` | `1.5` | 轮询间隔 |
+| 环境变量 | config.json key | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `ZEPPELIN_NOTE_DIR` | `note_dir` | `__skill/zeppelin` | 新建 note 放在 Zeppelin workspace 的哪个目录下，例如 `fin-eng/adhoc` |
+| `ZEPPELIN_KEEP_NOTES` | `keep_notes` | `false` | `true`/`1` = 跑完保留 note；默认跑完即删 |
+| `ZEPPELIN_TIMEOUT_SECONDS` | `timeout_seconds` | `300` | 单次轮询超时 |
+| `ZEPPELIN_POLL_INTERVAL_SECONDS` | `poll_interval_seconds` | `1.5` | 轮询间隔 |
+| `ZEPPELIN_AUTO_APPROVE_LEVEL` | —（仅环境变量） | `safe` | `safe` 只放纯读；`low` / `medium` / `high` 逐级放宽。高于这个等级的会弹确认。由 Claude 读取，不走 config.json |
 
 验证（`${CLAUDE_PLUGIN_ROOT}` 是 Claude Code 注入的插件根目录）：
 

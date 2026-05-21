@@ -20,12 +20,17 @@ Commands:
 
 All output is JSON on stdout. Errors go to stderr; exit code != 0 on failure.
 
-Credentials come from env (preferred) or ~/.zeppelin/config.json:
-  ZEPPELIN_BASE_URL=http://host:port[/basePath]
-  ZEPPELIN_USERNAME=user
-  ZEPPELIN_PASSWORD=pass
-  ZEPPELIN_TIMEOUT_SECONDS=300        # default poll cap
-  ZEPPELIN_POLL_INTERVAL_SECONDS=1.5
+Settings come from env (preferred) or ~/.zeppelin/config.json. For each one
+the env var wins; if unset, the config.json key is used; else the default.
+
+  env var                          config.json key          default
+  ZEPPELIN_BASE_URL                base_url                 (required)
+  ZEPPELIN_USERNAME                username                 (required)
+  ZEPPELIN_PASSWORD                password                 (required)
+  ZEPPELIN_NOTE_DIR                note_dir                 __skill/zeppelin
+  ZEPPELIN_KEEP_NOTES              keep_notes               false
+  ZEPPELIN_TIMEOUT_SECONDS         timeout_seconds          300
+  ZEPPELIN_POLL_INTERVAL_SECONDS   poll_interval_seconds    1.5
 """
 from __future__ import annotations
 
@@ -43,10 +48,6 @@ from dataclasses import dataclass
 from typing import Any
 
 CONFIG_PATH = os.path.expanduser("~/.zeppelin/config.json")
-DEFAULT_TIMEOUT = float(os.environ.get("ZEPPELIN_TIMEOUT_SECONDS", "300"))
-DEFAULT_INTERVAL = float(os.environ.get("ZEPPELIN_POLL_INTERVAL_SECONDS", "1.5"))
-DEFAULT_NOTE_DIR = os.environ.get("ZEPPELIN_NOTE_DIR", "__skill/zeppelin").strip().strip("/")
-DEFAULT_KEEP_NOTES = os.environ.get("ZEPPELIN_KEEP_NOTES", "").strip().lower() in ("1", "true", "yes", "on")
 TERMINAL = {"FINISHED", "ERROR", "ABORT"}
 
 _TICKET_JSON = re.compile(r'"ticket"\s*:\s*"[^"]*"')
@@ -64,6 +65,65 @@ def die(msg: str, code: int = 1) -> None:
     sys.exit(code)
 
 
+def _load_config() -> dict[str, Any]:
+    """Read ~/.zeppelin/config.json once. Missing file is fine; malformed
+    file is fatal so a typo doesn't silently fall back to defaults."""
+    if not os.path.exists(CONFIG_PATH):
+        return {}
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            blob = json.load(f)
+    except (OSError, ValueError) as e:
+        die(f"failed to read {CONFIG_PATH}: {e}")
+    if not isinstance(blob, dict):
+        die(f"{CONFIG_PATH}: expected a JSON object")
+    return blob
+
+
+_CONFIG = _load_config()
+
+
+def _cfg_str(env_key: str, config_key: str, default: str) -> str:
+    """Resolve a string setting: env var wins, then config.json, then default."""
+    v = os.environ.get(env_key, "").strip()
+    if v:
+        return v
+    cv = _CONFIG.get(config_key)
+    if cv not in (None, ""):
+        return str(cv).strip()
+    return default
+
+
+def _cfg_bool(env_key: str, config_key: str, default: bool) -> bool:
+    truthy = ("1", "true", "yes", "on")
+    v = os.environ.get(env_key, "").strip().lower()
+    if v:
+        return v in truthy
+    cv = _CONFIG.get(config_key)
+    if isinstance(cv, bool):
+        return cv
+    if isinstance(cv, str) and cv.strip():
+        return cv.strip().lower() in truthy
+    return default
+
+
+def _cfg_float(env_key: str, config_key: str, default: float) -> float:
+    v = os.environ.get(env_key, "").strip()
+    raw = v if v else _CONFIG.get(config_key)
+    if raw in (None, ""):
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        die(f"invalid number for {env_key}/{config_key}: {raw!r}")
+
+
+DEFAULT_TIMEOUT = _cfg_float("ZEPPELIN_TIMEOUT_SECONDS", "timeout_seconds", 300.0)
+DEFAULT_INTERVAL = _cfg_float("ZEPPELIN_POLL_INTERVAL_SECONDS", "poll_interval_seconds", 1.5)
+DEFAULT_NOTE_DIR = _cfg_str("ZEPPELIN_NOTE_DIR", "note_dir", "__skill/zeppelin").strip("/")
+DEFAULT_KEEP_NOTES = _cfg_bool("ZEPPELIN_KEEP_NOTES", "keep_notes", False)
+
+
 @dataclass
 class Creds:
     base_url: str
@@ -72,18 +132,9 @@ class Creds:
 
 
 def load_creds() -> Creds:
-    base = os.environ.get("ZEPPELIN_BASE_URL", "")
-    user = os.environ.get("ZEPPELIN_USERNAME", "")
-    pw = os.environ.get("ZEPPELIN_PASSWORD", "")
-    if not (base and user and pw) and os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                blob = json.load(f)
-            base = base or blob.get("base_url", "")
-            user = user or blob.get("username", "")
-            pw = pw or blob.get("password", "")
-        except (OSError, ValueError) as e:
-            die(f"failed to read {CONFIG_PATH}: {e}")
+    base = os.environ.get("ZEPPELIN_BASE_URL", "") or _CONFIG.get("base_url", "")
+    user = os.environ.get("ZEPPELIN_USERNAME", "") or _CONFIG.get("username", "")
+    pw = os.environ.get("ZEPPELIN_PASSWORD", "") or _CONFIG.get("password", "")
     missing = [k for k, v in (("ZEPPELIN_BASE_URL", base), ("ZEPPELIN_USERNAME", user), ("ZEPPELIN_PASSWORD", pw)) if not v]
     if missing:
         die(
@@ -272,15 +323,24 @@ def cmd_test_conn(_args: argparse.Namespace) -> None:
     })
 
 
-def _default_name() -> str:
+def _note_name(name: str) -> str:
+    """Full workspace path for a new note: <note_dir>/<label>-<timestamp>.
+
+    The caller (the Agent driving the skill) supplies a short, business-
+    meaningful <label> via --name, e.g. `dau-check` or `order-revenue`. We
+    place it under the configured note_dir and append a timestamp so repeated
+    runs of the same query don't collide. Falls back to `query` when no name
+    is given (and strips any timestamp the caller already tacked on)."""
     base = DEFAULT_NOTE_DIR or "__skill/zeppelin"
-    return f"{base}/{int(time.time())}-{os.getpid()}"
+    label = (name or "query").strip().strip("/") or "query"
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return f"{base}/{label}-{stamp}"
 
 
 def cmd_submit(args: argparse.Namespace) -> None:
     c = Client(load_creds())
     c.login()
-    name = args.name or _default_name()
+    name = _note_name(args.name)
     note_id, para_id = c.submit(name, args.magic, args.code)
     emit({"note_id": note_id, "paragraph_id": para_id, "note_name": name})
 
@@ -315,7 +375,7 @@ def cmd_exec(args: argparse.Namespace) -> None:
     """submit + poll until terminal; on success, optionally delete the note."""
     c = Client(load_creds())
     c.login()
-    name = args.name or _default_name()
+    name = _note_name(args.name)
     note_id, para_id = c.submit(name, args.magic, args.code)
     result = c.poll(note_id, para_id, args.timeout, args.interval)
     result["note_id"] = note_id
@@ -340,7 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("submit", help="create note + paragraph + start job (does not wait)")
     sp.add_argument("--magic", required=True, help="leading magic, e.g. %%spark.sql or %%pyspark")
     sp.add_argument("--code", required=True, help="paragraph body (SQL or code)")
-    sp.add_argument("--name", default="", help="optional note name; default: __skill/zeppelin/<ts>")
+    sp.add_argument("--name", default="", help="short business label, e.g. 'dau-check'; placed under note_dir with a -<timestamp> suffix. Default label: 'query'")
     sp.set_defaults(func=cmd_submit)
 
     sp = sub.add_parser("fetch", help="one-shot status+result for an existing paragraph")
@@ -365,7 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("exec", help="submit + poll + (default) delete the note when done")
     sp.add_argument("--magic", required=True)
     sp.add_argument("--code", required=True)
-    sp.add_argument("--name", default="")
+    sp.add_argument("--name", default="", help="short business label, e.g. 'dau-check'; placed under note_dir with a -<timestamp> suffix. Default label: 'query'")
     sp.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     sp.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
     sp.add_argument("--keep-note", action=argparse.BooleanOptionalAction, default=DEFAULT_KEEP_NOTES,

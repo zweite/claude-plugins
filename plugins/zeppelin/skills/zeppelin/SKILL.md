@@ -20,21 +20,33 @@ Do not skip the risk-gate, do not bypass the AskUserQuestion confirmation.
 
 ## Credentials
 
-The CLI reads credentials from env vars (preferred) or `~/.zeppelin/config.json`:
+The CLI reads settings from env vars (preferred) or `~/.zeppelin/config.json`.
+For every setting the env var wins; if unset, the config.json key is used; else
+the default.
 
 ```
-ZEPPELIN_BASE_URL=http://host:port[/basePath]
-ZEPPELIN_USERNAME=user
-ZEPPELIN_PASSWORD=pass
+env var                          config.json key          default
+ZEPPELIN_BASE_URL                base_url                 (required)
+ZEPPELIN_USERNAME                username                 (required)
+ZEPPELIN_PASSWORD                password                 (required)
+ZEPPELIN_NOTE_DIR                note_dir                 __skill/zeppelin   # workspace dir new notes go under
+ZEPPELIN_KEEP_NOTES              keep_notes               false              # true = keep notes instead of deleting
+ZEPPELIN_TIMEOUT_SECONDS         timeout_seconds          300                # poll cap
+ZEPPELIN_POLL_INTERVAL_SECONDS   poll_interval_seconds    1.5                # poll cadence
+ZEPPELIN_AUTO_APPROVE_LEVEL      — (env only)             safe               # see risk gate below; read by Claude, not the CLI
 ```
 
-Optional tuning:
-```
-ZEPPELIN_NOTE_DIR=__skill/zeppelin    # workspace dir new notes are created under
-ZEPPELIN_KEEP_NOTES=0                 # 1 = keep notes after run instead of deleting
-ZEPPELIN_TIMEOUT_SECONDS=300          # poll cap (default 300)
-ZEPPELIN_POLL_INTERVAL_SECONDS=1.5    # poll cadence
-ZEPPELIN_AUTO_APPROVE_LEVEL=safe      # see risk gate below
+Example `~/.zeppelin/config.json`:
+```json
+{
+  "base_url": "http://host:port",
+  "username": "user",
+  "password": "pass",
+  "note_dir": "fin-eng/adhoc",
+  "keep_notes": false,
+  "timeout_seconds": 300,
+  "poll_interval_seconds": 1.5
+}
 ```
 
 If creds are missing, run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zeppelin.py test-conn`
@@ -123,8 +135,16 @@ Once cleared (auto or after confirmation):
 ```bash
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zeppelin.py exec \
   --magic '%spark.sql' \
-  --code "$CODE"
+  --code "$CODE" \
+  --name 'dau-check'
 ```
+
+Always pass `--name` with a short, business-meaningful label describing what
+the query does (`dau-check`, `order-revenue`, `user-funnel`) — kebab-case, no
+spaces. The CLI places it under `note_dir` and appends a `-<timestamp>` suffix
+itself, so do NOT add your own date/time; just give the semantic name. The
+final note path looks like `<note_dir>/dau-check-20260521-143005`. If you omit
+`--name`, it falls back to the meaningless label `query`.
 
 `exec` submits, polls until terminal, and (by default) deletes the temporary
 note. The note is created under `ZEPPELIN_NOTE_DIR` (default `__skill/zeppelin`).
