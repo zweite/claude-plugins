@@ -171,6 +171,11 @@ def _resolve_space(session, uuid: str, space: str | None) -> str:
     r = session.get(f"{dl.BASE}/i/nodes/{uuid}", timeout=20)
     m = re.search(r'"spaceId":"([^"]+)"', r.text)
     if not m:
+        if "统一身份认证" in r.text or "<title>" in r.text and "登录" in r.text:
+            die("not logged in — the cookie looks expired. Refresh it in "
+                f"{CONFIG_PATH}: open alidocs.dingtalk.com in a logged-in browser, "
+                "copy the full Cookie request header (DevTools → Network → any request "
+                "→ Request Headers → Cookie), and set it as `cookie`.")
         die("could not discover spaceId from the page; add `space_id` to the config "
             "or use a link that includes spaceId.")
     return m.group(1)
