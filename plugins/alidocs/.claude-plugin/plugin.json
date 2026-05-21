@@ -1,0 +1,6 @@
+{
+  "name": "alidocs",
+  "description": "Download a DingTalk / alidocs document or an entire folder from its link, preserving structure. Online docs export to .docx/.xlsx via Playwright when installed.",
+  "version": "1.0.0",
+  "license": "MIT"
+}

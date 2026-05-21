@@ -1,6 +1,6 @@
 {
   "name": "zeppelin",
   "description": "Run SQL / Spark / PySpark / shell paragraphs on Apache Zeppelin with built-in risk control. Classifies risk and asks for confirmation before high-risk operations.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "license": "MIT"
 }

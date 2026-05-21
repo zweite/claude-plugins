@@ -21,8 +21,9 @@ no driver, no `mysql` binary) and connects to the FE query port (default 9030).
 
 ## Connection & profiles
 
-Settings come from env (preferred) or `~/.starrocks/config.json`. The config can
-be a single flat connection, or a `profiles` map for multiple environments:
+Settings come from env (preferred) or `~/.taku/starrocks.json` (legacy
+`~/.starrocks/config.json` still read; override the dir with `TAKU_DIR`). The
+config can be a single flat connection, or a `profiles` map for multiple environments:
 
 ```json
 {

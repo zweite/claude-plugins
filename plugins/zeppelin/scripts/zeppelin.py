@@ -24,8 +24,9 @@ Commands:
 
 All output is JSON on stdout. Errors go to stderr; exit code != 0 on failure.
 
-Settings come from env (preferred) or ~/.zeppelin/config.json. For each one
-the env var wins; if unset, the config.json key is used; else the default.
+Settings come from env (preferred) or ~/.taku/zeppelin.json (legacy
+~/.zeppelin/config.json still read; override the dir with TAKU_DIR). For each
+one the env var wins; if unset, the config key is used; else the default.
 
   env var                          config.json key          default
   ZEPPELIN_BASE_URL                base_url                 (required)
@@ -67,7 +68,20 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-CONFIG_PATH = os.path.expanduser("~/.zeppelin/config.json")
+def _config_path(tool: str, legacy: str) -> str:
+    """Unified config location ~/.taku/<tool>.json (override base dir with
+    TAKU_DIR). Falls back to the legacy per-tool path if the unified file
+    isn't there yet, so existing setups keep working."""
+    base = os.environ.get("TAKU_DIR", "").strip() or os.path.expanduser("~/.taku")
+    unified = os.path.join(base, f"{tool}.json")
+    if os.path.exists(unified):
+        return unified
+    if os.path.exists(os.path.expanduser(legacy)):
+        return os.path.expanduser(legacy)
+    return unified
+
+
+CONFIG_PATH = _config_path("zeppelin", "~/.zeppelin/config.json")
 TERMINAL = {"FINISHED", "ERROR", "ABORT"}
 
 _TICKET_JSON = re.compile(r'"ticket"\s*:\s*"[^"]*"')

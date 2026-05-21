@@ -20,8 +20,9 @@ Do not skip the risk-gate, do not bypass the AskUserQuestion confirmation.
 
 ## Credentials
 
-The CLI reads settings from env vars (preferred) or `~/.zeppelin/config.json`.
-For every setting the env var wins; if unset, the config.json key is used; else
+The CLI reads settings from env vars (preferred) or `~/.taku/zeppelin.json`
+(legacy `~/.zeppelin/config.json` still read; override the dir with `TAKU_DIR`).
+For every setting the env var wins; if unset, the config key is used; else
 the default.
 
 ```
@@ -38,7 +39,7 @@ ZEPPELIN_CACHE_TTL_DAYS          cache_ttl_days           30                 # c
 ZEPPELIN_AUTO_APPROVE_LEVEL      — (env only)             safe               # see risk gate below; read by Claude, not the CLI
 ```
 
-Example `~/.zeppelin/config.json`:
+Example `~/.taku/zeppelin.json`:
 ```json
 {
   "base_url": "http://host:port",

@@ -15,7 +15,7 @@
 
 ## 配置
 
-凭据走环境变量或 `~/.starrocks/config.json`（注意 `chmod 600`）。支持单环境（扁平）或多环境（`profiles`）：
+凭据走环境变量或 `~/.taku/starrocks.json`（旧路径 `~/.starrocks/config.json` 仍兼容；`TAKU_DIR` 可改根目录。注意 `chmod 600`）。支持单环境（扁平）或多环境（`profiles`）：
 
 ```json
 {

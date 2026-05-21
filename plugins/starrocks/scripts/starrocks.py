@@ -15,8 +15,9 @@ Commands:
 
 All output is JSON on stdout. Errors go to stderr; exit code != 0 on failure.
 
-Settings come from env (preferred) or ~/.starrocks/config.json. The config may
-hold a single flat connection OR a `profiles` map for multiple environments:
+Settings come from env (preferred) or ~/.taku/starrocks.json (legacy
+~/.starrocks/config.json still read; override the dir with TAKU_DIR). The config
+may hold a single flat connection OR a `profiles` map for multiple environments:
 
   {
     "default_profile": "prod",
@@ -58,7 +59,20 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-CONFIG_PATH = os.path.expanduser("~/.starrocks/config.json")
+def _config_path(tool: str, legacy: str) -> str:
+    """Unified config location ~/.taku/<tool>.json (override base dir with
+    TAKU_DIR). Falls back to the legacy per-tool path if the unified file
+    isn't there yet, so existing setups keep working."""
+    base = os.environ.get("TAKU_DIR", "").strip() or os.path.expanduser("~/.taku")
+    unified = os.path.join(base, f"{tool}.json")
+    if os.path.exists(unified):
+        return unified
+    if os.path.exists(os.path.expanduser(legacy)):
+        return os.path.expanduser(legacy)
+    return unified
+
+
+CONFIG_PATH = _config_path("starrocks", "~/.starrocks/config.json")
 DEFAULT_SAMPLE_ROWS = 10
 _TABLE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.]*$")
 

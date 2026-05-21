@@ -29,7 +29,7 @@ export ZEPPELIN_USERNAME=you
 export ZEPPELIN_PASSWORD='…'
 ```
 
-或者写文件 `~/.zeppelin/config.json`（注意 chmod 600）。除了凭据，下表里带 config.json key 的可选项也能写进来：
+或者写文件 `~/.taku/zeppelin.json`（旧路径 `~/.zeppelin/config.json` 仍兼容；`TAKU_DIR` 可改根目录。注意 chmod 600）。除了凭据，下表里带 config key 的可选项也能写进来：
 
 ```json
 {
