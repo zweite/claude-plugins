@@ -53,6 +53,24 @@ Example `~/.zeppelin/config.json`:
 }
 ```
 
+**Multiple environments:** instead of flat keys, the config may hold a `profiles`
+map. Select one with `--profile NAME` or `ZEPPELIN_PROFILE` (else `default_profile`,
+else the sole profile). Top-level keys are shared defaults merged into each
+profile; the cache is namespaced per profile so envs don't collide. A flat config
+is the implicit `default` profile (cache un-namespaced). Pass `--profile` before
+the subcommand: `zeppelin.py --profile stg exec ...`.
+
+```json
+{
+  "default_profile": "prod",
+  "profiles": {
+    "prod": { "base_url": "...", "username": "...", "password": "..." },
+    "stg":  { "base_url": "...", "username": "...", "password": "..." }
+  },
+  "cache_ttl_days": 30
+}
+```
+
 If creds are missing, run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zeppelin.py test-conn`
 once to surface the exact error and tell the user what to set. Do NOT prompt
 the user for passwords — they should put them in env or the config file.

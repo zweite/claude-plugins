@@ -1,0 +1,6 @@
+{
+  "name": "starrocks",
+  "description": "Run SQL against StarRocks over the MySQL protocol (pure-Python, no driver). Classifies risk and asks for confirmation before high-risk operations; caches table schema + samples.",
+  "version": "1.0.0",
+  "license": "MIT"
+}

@@ -9,6 +9,11 @@
       "name": "zeppelin",
       "source": "./plugins/zeppelin",
       "description": "Run SQL / Spark / PySpark / shell paragraphs on Apache Zeppelin with built-in risk control."
+    },
+    {
+      "name": "starrocks",
+      "source": "./plugins/starrocks",
+      "description": "Run SQL against StarRocks over the MySQL protocol (pure-Python) with built-in risk control and a schema/sample cache."
     }
   ]
 }

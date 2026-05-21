@@ -37,11 +37,24 @@ the env var wins; if unset, the config.json key is used; else the default.
   ZEPPELIN_POLL_INTERVAL_SECONDS   poll_interval_seconds    1.5
   ZEPPELIN_CACHE_DIR               cache_dir                ~/.zeppelin/cache
   ZEPPELIN_CACHE_TTL_DAYS          cache_ttl_days           30
+
+Multiple environments: the config may hold a `profiles` map instead of flat
+keys, selected with --profile / ZEPPELIN_PROFILE (else default_profile, else
+the sole profile). Top-level keys are shared defaults merged into each profile;
+the cache is namespaced per profile. A flat config (no `profiles`) is the
+implicit "default" profile and keeps its cache un-namespaced. Example:
+
+  { "default_profile": "prod",
+    "profiles": {
+      "prod": {"base_url": "...", "username": "...", "password": "..."},
+      "stg":  {"base_url": "...", "username": "...", "password": "..."} },
+    "cache_ttl_days": 30 }
 """
 from __future__ import annotations
 
 import argparse
 import datetime
+import http.client
 import http.cookiejar
 import json
 import os
@@ -87,15 +100,53 @@ def _load_config() -> dict[str, Any]:
     return blob
 
 
+def _early_profile() -> str:
+    """Peek --profile out of argv before argparse runs (settings resolve at
+    import time and can be profile-specific)."""
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == "--profile" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--profile="):
+            return a.split("=", 1)[1]
+    return os.environ.get("ZEPPELIN_PROFILE", "").strip()
+
+
+def _resolve_profile(config: dict[str, Any], selected: str) -> tuple[dict[str, Any], str, bool]:
+    """Return (effective settings dict, profile name, uses_profiles). A config
+    with a non-empty `profiles` map selects one (via --profile/env, else
+    default_profile, else the sole profile); top-level keys are shared defaults.
+    A flat config is the single implicit 'default' profile."""
+    profiles = config.get("profiles")
+    if isinstance(profiles, dict) and profiles:
+        base = {k: v for k, v in config.items() if k not in ("profiles", "default_profile")}
+        name = selected or config.get("default_profile", "")
+        if not name:
+            if len(profiles) == 1:
+                name = next(iter(profiles))
+            else:
+                die("multiple profiles defined; pass --profile or set default_profile. "
+                    f"Available: {', '.join(sorted(profiles))}")
+        if name not in profiles:
+            die(f"profile {name!r} not found in {CONFIG_PATH}. Available: {', '.join(sorted(profiles))}")
+        if not isinstance(profiles[name], dict):
+            die(f"profile {name!r} must be a JSON object")
+        merged = dict(base)
+        merged.update(profiles[name])
+        return merged, name, True
+    return dict(config), (selected or "default"), False
+
+
 _CONFIG = _load_config()
+_PROFILE, PROFILE_NAME, USES_PROFILES = _resolve_profile(_CONFIG, _early_profile())
 
 
 def _cfg_str(env_key: str, config_key: str, default: str) -> str:
-    """Resolve a string setting: env var wins, then config.json, then default."""
+    """Resolve a string setting: env var wins, then profile/config, then default."""
     v = os.environ.get(env_key, "").strip()
     if v:
         return v
-    cv = _CONFIG.get(config_key)
+    cv = _PROFILE.get(config_key)
     if cv not in (None, ""):
         return str(cv).strip()
     return default
@@ -106,7 +157,7 @@ def _cfg_bool(env_key: str, config_key: str, default: bool) -> bool:
     v = os.environ.get(env_key, "").strip().lower()
     if v:
         return v in truthy
-    cv = _CONFIG.get(config_key)
+    cv = _PROFILE.get(config_key)
     if isinstance(cv, bool):
         return cv
     if isinstance(cv, str) and cv.strip():
@@ -116,7 +167,7 @@ def _cfg_bool(env_key: str, config_key: str, default: bool) -> bool:
 
 def _cfg_float(env_key: str, config_key: str, default: float) -> float:
     v = os.environ.get(env_key, "").strip()
-    raw = v if v else _CONFIG.get(config_key)
+    raw = v if v else _PROFILE.get(config_key)
     if raw in (None, ""):
         return default
     try:
@@ -129,9 +180,12 @@ DEFAULT_TIMEOUT = _cfg_float("ZEPPELIN_TIMEOUT_SECONDS", "timeout_seconds", 300.
 DEFAULT_INTERVAL = _cfg_float("ZEPPELIN_POLL_INTERVAL_SECONDS", "poll_interval_seconds", 1.5)
 DEFAULT_NOTE_DIR = _cfg_str("ZEPPELIN_NOTE_DIR", "note_dir", "__skill/zeppelin").strip("/")
 DEFAULT_KEEP_NOTES = _cfg_bool("ZEPPELIN_KEEP_NOTES", "keep_notes", False)
-DEFAULT_CACHE_DIR = os.path.expanduser(
+_BASE_CACHE_DIR = os.path.expanduser(
     _cfg_str("ZEPPELIN_CACHE_DIR", "cache_dir", "~/.zeppelin/cache"))
 DEFAULT_CACHE_TTL_DAYS = _cfg_float("ZEPPELIN_CACHE_TTL_DAYS", "cache_ttl_days", 30.0)
+# namespace the cache per profile only when profiles are in use; a flat config
+# keeps the un-namespaced layout so existing caches aren't orphaned.
+DEFAULT_CACHE_DIR = os.path.join(_BASE_CACHE_DIR, PROFILE_NAME) if USES_PROFILES else _BASE_CACHE_DIR
 DEFAULT_SAMPLE_ROWS = 10
 _TABLE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.]*$")
 
@@ -144,9 +198,9 @@ class Creds:
 
 
 def load_creds() -> Creds:
-    base = os.environ.get("ZEPPELIN_BASE_URL", "") or _CONFIG.get("base_url", "")
-    user = os.environ.get("ZEPPELIN_USERNAME", "") or _CONFIG.get("username", "")
-    pw = os.environ.get("ZEPPELIN_PASSWORD", "") or _CONFIG.get("password", "")
+    base = os.environ.get("ZEPPELIN_BASE_URL", "") or _PROFILE.get("base_url", "")
+    user = os.environ.get("ZEPPELIN_USERNAME", "") or _PROFILE.get("username", "")
+    pw = os.environ.get("ZEPPELIN_PASSWORD", "") or _PROFILE.get("password", "")
     missing = [k for k, v in (("ZEPPELIN_BASE_URL", base), ("ZEPPELIN_USERNAME", user), ("ZEPPELIN_PASSWORD", pw)) if not v]
     if missing:
         die(
@@ -185,6 +239,11 @@ class Client:
             return e.code, e.read() or b""
         except urllib.error.URLError as e:
             die(f"network error talking to {self.creds.base_url}{path}: {e.reason}")
+        except (http.client.HTTPException, ConnectionError, TimeoutError, OSError) as e:
+            # e.g. RemoteDisconnected when the server drops the connection under
+            # load — urllib doesn't wrap these in URLError, so catch them here
+            # and fail cleanly instead of crashing with a traceback.
+            die(f"connection error talking to {self.creds.base_url}{path}: {e}")
 
     def _request_retry401(self, method: str, path: str, body: bytes | None = None,
                           content_type: str | None = None) -> tuple[int, bytes]:
@@ -568,6 +627,7 @@ def cmd_cache_clear(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Zeppelin REST CLI for Claude Code skill")
+    p.add_argument("--profile", default="", help="config profile to use (else ZEPPELIN_PROFILE / default_profile)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("login").set_defaults(func=cmd_login)

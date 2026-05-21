@@ -45,6 +45,26 @@ export ZEPPELIN_PASSWORD='…'
 }
 ```
 
+### 多环境（profiles）
+
+有多套 Zeppelin（prod / staging 等）时，把扁平 key 换成 `profiles` 映射：
+
+```json
+{
+  "default_profile": "prod",
+  "profiles": {
+    "prod": { "base_url": "http://prod:8080", "username": "you", "password": "…", "note_dir": "prod/adhoc" },
+    "stg":  { "base_url": "http://stg:8080",  "username": "you", "password": "…" }
+  },
+  "cache_ttl_days": 30
+}
+```
+
+- 选 profile：`--profile stg`（放在子命令前，如 `zeppelin.py --profile stg exec …`）或 `ZEPPELIN_PROFILE`；都没指定就用 `default_profile`，再没有且只有一个就用那个。
+- `profiles` 外层的 key 是所有 profile 共享的默认值，profile 内可覆盖。
+- 缓存按 profile 隔离（`~/.zeppelin/cache/<profile>/`），prod / stg 同名表互不覆盖。
+- 没有 `profiles` 的扁平 config 视为隐式 `default`，缓存不加子目录（向后兼容，旧缓存不丢）。
+
 可选项（**环境变量优先于 config.json，都没有才用默认值**）：
 
 | 环境变量 | config.json key | 默认 | 说明 |
