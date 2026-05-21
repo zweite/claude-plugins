@@ -33,6 +33,8 @@ ZEPPELIN_NOTE_DIR                note_dir                 __skill/zeppelin   # w
 ZEPPELIN_KEEP_NOTES              keep_notes               false              # true = keep notes instead of deleting
 ZEPPELIN_TIMEOUT_SECONDS         timeout_seconds          300                # poll cap
 ZEPPELIN_POLL_INTERVAL_SECONDS   poll_interval_seconds    1.5                # poll cadence
+ZEPPELIN_CACHE_DIR               cache_dir                ~/.zeppelin/cache  # schema+sample cache location
+ZEPPELIN_CACHE_TTL_DAYS          cache_ttl_days           30                 # cache freshness window
 ZEPPELIN_AUTO_APPROVE_LEVEL      — (env only)             safe               # see risk gate below; read by Claude, not the CLI
 ```
 
@@ -45,7 +47,9 @@ Example `~/.zeppelin/config.json`:
   "note_dir": "fin-eng/adhoc",
   "keep_notes": false,
   "timeout_seconds": 300,
-  "poll_interval_seconds": 1.5
+  "poll_interval_seconds": 1.5,
+  "cache_dir": "~/.zeppelin/cache",
+  "cache_ttl_days": 30
 }
 ```
 
@@ -169,6 +173,45 @@ Report to the user:
 - On `FINISHED` + non-table: show the `text` (likely PySpark stdout or `df.show()` output).
 - On `ERROR` / `ABORT`: show `text` (Zeppelin puts the traceback there) and offer to diagnose / retry with a fix.
 - On `timed_out: true`: tell the user the run is still in flight, give them the `note_id` + `paragraph_id` so they can poll later with `zeppelin.py poll`.
+
+## Table metadata cache
+
+When you review data that involves real tables, cache each table's schema and a
+10-row sample under `cache_dir` (default `~/.zeppelin/cache`, TTL 30 days). This
+lets later runs confirm a table's columns/shape without re-querying Zeppelin.
+
+**Before** querying a table you're unsure about, check the cache first:
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zeppelin.py cache get --table uparpu_main.orders
+# -> {"status": "hit"|"stale"|"miss", "columns": [...], "sample": [...], "age_days": ...}
+```
+
+- `hit` → use the cached columns/sample; no need to re-query schema.
+- `stale` or `miss` → query as normal, then populate the cache (below).
+
+**After** reviewing a table (or whenever you confirm one), cache it:
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/zeppelin.py cache put --table uparpu_main.orders
+```
+
+`cache put` runs `DESCRIBE` + `SELECT * LIMIT 10` (both auto-cleaned, never kept
+as notes) and writes the entry. It's cheap and idempotent: if the entry is still
+fresh it returns `status: fresh` without re-querying. Use `--force` to refresh on
+demand (the user's "强制更新"). Other commands:
+
+```bash
+zeppelin.py cache list                       # all cached tables + freshness
+zeppelin.py cache clear --table db.t          # evict one
+zeppelin.py cache clear --all                 # evict everything
+```
+
+Notes:
+- The cache stores **real sample rows in plaintext** on the user's disk. That's
+  intended, but don't echo large samples back unless asked — summarize.
+- Pass `--table db.table` (validated as `db.table`); use the fully-qualified name.
+- `cache get`/`list`/`clear` are local-only (no Zeppelin call); only `put` logs in.
 
 ## Multi-paragraph sessions
 

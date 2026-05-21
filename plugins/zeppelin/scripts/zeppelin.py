@@ -17,6 +17,10 @@ Commands:
   delete-note --note N                  — drop a note
   exec    --magic M --code C [--name N] [--keep-note]
                                           — convenience: submit + cleanup
+  cache get   --table db.t [--max-age-days N]   — read cached schema+sample
+  cache put   --table db.t [--force] [--limit N] — cache schema + N-row sample
+  cache list                                    — cached tables + freshness
+  cache clear --table db.t | --all              — evict cache entries
 
 All output is JSON on stdout. Errors go to stderr; exit code != 0 on failure.
 
@@ -31,10 +35,13 @@ the env var wins; if unset, the config.json key is used; else the default.
   ZEPPELIN_KEEP_NOTES              keep_notes               false
   ZEPPELIN_TIMEOUT_SECONDS         timeout_seconds          300
   ZEPPELIN_POLL_INTERVAL_SECONDS   poll_interval_seconds    1.5
+  ZEPPELIN_CACHE_DIR               cache_dir                ~/.zeppelin/cache
+  ZEPPELIN_CACHE_TTL_DAYS          cache_ttl_days           30
 """
 from __future__ import annotations
 
 import argparse
+import datetime
 import http.cookiejar
 import json
 import os
@@ -122,6 +129,11 @@ DEFAULT_TIMEOUT = _cfg_float("ZEPPELIN_TIMEOUT_SECONDS", "timeout_seconds", 300.
 DEFAULT_INTERVAL = _cfg_float("ZEPPELIN_POLL_INTERVAL_SECONDS", "poll_interval_seconds", 1.5)
 DEFAULT_NOTE_DIR = _cfg_str("ZEPPELIN_NOTE_DIR", "note_dir", "__skill/zeppelin").strip("/")
 DEFAULT_KEEP_NOTES = _cfg_bool("ZEPPELIN_KEEP_NOTES", "keep_notes", False)
+DEFAULT_CACHE_DIR = os.path.expanduser(
+    _cfg_str("ZEPPELIN_CACHE_DIR", "cache_dir", "~/.zeppelin/cache"))
+DEFAULT_CACHE_TTL_DAYS = _cfg_float("ZEPPELIN_CACHE_TTL_DAYS", "cache_ttl_days", 30.0)
+DEFAULT_SAMPLE_ROWS = 10
+_TABLE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.]*$")
 
 
 @dataclass
@@ -390,6 +402,170 @@ def cmd_exec(args: argparse.Namespace) -> None:
     emit(result)
 
 
+# ── metadata cache ───────────────────────────────────────────────────────
+# Persist each reviewed table's schema + a small data sample under cache_dir
+# so later runs can confirm a table without re-querying Zeppelin. Entries
+# carry their own TTL (default 30d); reads past the TTL report "stale".
+
+def _table_ok(table: str) -> str:
+    """Validate and normalize a db.table identifier (guards SQL interpolation)."""
+    t = (table or "").strip()
+    if not _TABLE_RE.match(t):
+        die(f"invalid table name {table!r}: expected db.table (letters, digits, _ and .)")
+    return t
+
+
+def _cache_path(table: str) -> str:
+    safe = table.replace(os.sep, "_")
+    return os.path.join(DEFAULT_CACHE_DIR, f"{safe}.json")
+
+
+def _read_cache(table: str) -> dict[str, Any] | None:
+    path = _cache_path(table)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _entry_age_days(entry: dict[str, Any]) -> float | None:
+    try:
+        cached = datetime.datetime.fromisoformat(entry["cached_at"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    return (datetime.datetime.now() - cached).total_seconds() / 86400.0
+
+
+def _freshness(entry: dict[str, Any], max_age_days: float) -> tuple[str, float | None]:
+    age = _entry_age_days(entry)
+    if age is None:
+        return "stale", None
+    return ("hit" if age <= max_age_days else "stale"), round(age, 2)
+
+
+def _run_select(c: Client, code: str, timeout: float, interval: float) -> dict[str, Any]:
+    """Run a read-only paragraph for cache population; always clean up the note."""
+    note_id, para_id = c.submit(_note_name("cache"), "%spark.sql", code)
+    try:
+        result = c.poll(note_id, para_id, timeout, interval)
+    finally:
+        try:
+            c.delete_note(note_id)
+        except SystemExit:
+            pass
+    return result
+
+
+def _fetch_table_meta(c: Client, table: str, limit: int,
+                      timeout: float, interval: float) -> dict[str, Any]:
+    desc = _run_select(c, f"DESCRIBE {table}", timeout, interval)
+    if desc.get("status") != "FINISHED":
+        die(f"DESCRIBE {table} failed ({desc.get('status')}): {desc.get('text', '')[:300]}")
+    columns: list[dict[str, str]] = []
+    for row in desc.get("rows") or []:
+        name = (row.get("col_name") or "").strip()
+        if not name or name.startswith("#"):
+            break  # partition-info / detailed-table section starts here
+        columns.append({
+            "name": name,
+            "type": (row.get("data_type") or "").strip(),
+            "comment": (row.get("comment") or "").strip(),
+        })
+    sample = _run_select(c, f"SELECT * FROM {table} LIMIT {limit}", timeout, interval)
+    if sample.get("status") != "FINISHED":
+        die(f"SELECT from {table} failed ({sample.get('status')}): {sample.get('text', '')[:300]}")
+    rows = sample.get("rows") or []
+    return {
+        "table": table,
+        "cached_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "ttl_days": DEFAULT_CACHE_TTL_DAYS,
+        "columns": columns,
+        "sample": rows,
+        "sample_row_count": len(rows),
+    }
+
+
+def cmd_cache_get(args: argparse.Namespace) -> None:
+    table = _table_ok(args.table)
+    max_age = args.max_age_days if args.max_age_days is not None else DEFAULT_CACHE_TTL_DAYS
+    entry = _read_cache(table)
+    if entry is None:
+        emit({"table": table, "status": "miss"})
+        return
+    status, age = _freshness(entry, max_age)
+    entry["status"] = status
+    entry["age_days"] = age
+    emit(entry)
+
+
+def cmd_cache_put(args: argparse.Namespace) -> None:
+    table = _table_ok(args.table)
+    if not args.force:
+        entry = _read_cache(table)
+        if entry is not None:
+            status, age = _freshness(entry, DEFAULT_CACHE_TTL_DAYS)
+            if status == "hit":
+                entry["status"] = "fresh"  # already cached and within TTL; skip re-query
+                entry["age_days"] = age
+                emit(entry)
+                return
+    c = Client(load_creds())
+    c.login()
+    entry = _fetch_table_meta(c, table, args.limit, args.timeout, args.interval)
+    os.makedirs(DEFAULT_CACHE_DIR, exist_ok=True)
+    path = _cache_path(table)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(entry, f, ensure_ascii=False, indent=2, default=str)
+    entry["status"] = "written"
+    entry["path"] = path
+    emit(entry)
+
+
+def cmd_cache_list(_args: argparse.Namespace) -> None:
+    out: list[dict[str, Any]] = []
+    if os.path.isdir(DEFAULT_CACHE_DIR):
+        for fn in sorted(os.listdir(DEFAULT_CACHE_DIR)):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(DEFAULT_CACHE_DIR, fn), "r", encoding="utf-8") as f:
+                    entry = json.load(f)
+            except (OSError, ValueError):
+                continue
+            status, age = _freshness(entry, entry.get("ttl_days", DEFAULT_CACHE_TTL_DAYS))
+            out.append({
+                "table": entry.get("table", fn[:-5]),
+                "cached_at": entry.get("cached_at"),
+                "age_days": age,
+                "status": status,
+                "columns": len(entry.get("columns") or []),
+                "sample_rows": entry.get("sample_row_count", len(entry.get("sample") or [])),
+            })
+    emit({"cache_dir": DEFAULT_CACHE_DIR, "ttl_days": DEFAULT_CACHE_TTL_DAYS, "tables": out})
+
+
+def cmd_cache_clear(args: argparse.Namespace) -> None:
+    if not args.table and not args.all:
+        die("cache clear: pass --table <db.table> or --all")
+    removed: list[str] = []
+    if args.all:
+        if os.path.isdir(DEFAULT_CACHE_DIR):
+            for fn in os.listdir(DEFAULT_CACHE_DIR):
+                if fn.endswith(".json"):
+                    os.remove(os.path.join(DEFAULT_CACHE_DIR, fn))
+                    removed.append(fn[:-5])
+    else:
+        table = _table_ok(args.table)
+        path = _cache_path(table)
+        if os.path.exists(path):
+            os.remove(path)
+            removed.append(table)
+    emit({"ok": True, "removed": removed})
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Zeppelin REST CLI for Claude Code skill")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -431,6 +607,30 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--keep-note", action=argparse.BooleanOptionalAction, default=DEFAULT_KEEP_NOTES,
                     help="keep the note after run (default from ZEPPELIN_KEEP_NOTES; use --no-keep-note to force delete)")
     sp.set_defaults(func=cmd_exec)
+
+    cache = sub.add_parser("cache", help="schema + data-sample cache for reviewed tables")
+    csub = cache.add_subparsers(dest="cache_cmd", required=True)
+
+    cg = csub.add_parser("get", help="read a cached table entry (status: hit/stale/miss)")
+    cg.add_argument("--table", required=True, help="db.table")
+    cg.add_argument("--max-age-days", type=float, default=None,
+                    help=f"freshness window; default cache_ttl_days ({DEFAULT_CACHE_TTL_DAYS:g})")
+    cg.set_defaults(func=cmd_cache_get)
+
+    cp = csub.add_parser("put", help="cache a table's schema + sample (skips if fresh unless --force)")
+    cp.add_argument("--table", required=True, help="db.table")
+    cp.add_argument("--force", action="store_true", help="re-query and overwrite even if the entry is still fresh")
+    cp.add_argument("--limit", type=int, default=DEFAULT_SAMPLE_ROWS, help="sample row count (default 10)")
+    cp.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    cp.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
+    cp.set_defaults(func=cmd_cache_put)
+
+    csub.add_parser("list", help="list cached tables with freshness").set_defaults(func=cmd_cache_list)
+
+    cc = csub.add_parser("clear", help="evict cache entries")
+    cc.add_argument("--table", default="", help="db.table to evict")
+    cc.add_argument("--all", action="store_true", help="evict every cached table")
+    cc.set_defaults(func=cmd_cache_clear)
 
     return p
 

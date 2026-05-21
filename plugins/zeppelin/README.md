@@ -39,7 +39,9 @@ export ZEPPELIN_PASSWORD='…'
   "note_dir": "fin-eng/adhoc",
   "keep_notes": true,
   "timeout_seconds": 600,
-  "poll_interval_seconds": 1.5
+  "poll_interval_seconds": 1.5,
+  "cache_dir": "~/.zeppelin/cache",
+  "cache_ttl_days": 30
 }
 ```
 
@@ -51,6 +53,8 @@ export ZEPPELIN_PASSWORD='…'
 | `ZEPPELIN_KEEP_NOTES` | `keep_notes` | `false` | `true`/`1` = 跑完保留 note；默认跑完即删 |
 | `ZEPPELIN_TIMEOUT_SECONDS` | `timeout_seconds` | `300` | 单次轮询超时 |
 | `ZEPPELIN_POLL_INTERVAL_SECONDS` | `poll_interval_seconds` | `1.5` | 轮询间隔 |
+| `ZEPPELIN_CACHE_DIR` | `cache_dir` | `~/.zeppelin/cache` | 表结构 + 数据 sample 缓存目录 |
+| `ZEPPELIN_CACHE_TTL_DAYS` | `cache_ttl_days` | `30` | 缓存新鲜度窗口（天），过期算 `stale` |
 | `ZEPPELIN_AUTO_APPROVE_LEVEL` | —（仅环境变量） | `safe` | `safe` 只放纯读；`low` / `medium` / `high` 逐级放宽。高于这个等级的会弹确认。由 Claude 读取，不走 config.json |
 
 验证（`${CLAUDE_PLUGIN_ROOT}` 是 Claude Code 注入的插件根目录）：
@@ -104,6 +108,13 @@ python3 "$ROOT/scripts/zeppelin.py" submit --magic '%pyspark' --code 'print("hi"
 python3 "$ROOT/scripts/zeppelin.py" poll --note 2K... --para 20... --timeout 600
 python3 "$ROOT/scripts/zeppelin.py" list-notes
 python3 "$ROOT/scripts/zeppelin.py" delete-note --note 2K...
+
+# 表元数据缓存（结构 + 10 条 sample，默认存 ~/.zeppelin/cache，TTL 30 天）
+python3 "$ROOT/scripts/zeppelin.py" cache put --table uparpu_main.orders          # 写入（已新鲜则跳过）
+python3 "$ROOT/scripts/zeppelin.py" cache put --table uparpu_main.orders --force  # 强制更新
+python3 "$ROOT/scripts/zeppelin.py" cache get --table uparpu_main.orders          # 读取：hit / stale / miss
+python3 "$ROOT/scripts/zeppelin.py" cache list                                    # 列出所有缓存 + 新鲜度
+python3 "$ROOT/scripts/zeppelin.py" cache clear --table uparpu_main.orders        # 清除单个 / --all 清全部
 
 # 单独打分（不联网）
 echo 'DROP TABLE foo' | python3 "$ROOT/scripts/risk.py" --magic '%spark.sql'
