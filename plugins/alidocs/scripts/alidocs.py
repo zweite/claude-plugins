@@ -3,10 +3,12 @@
 alidocs.py — download a DingTalk / alidocs document (or a whole folder) from a
 shared link.
 
-Thin wrapper over dl_alidocs.py: give it a node link and it mirrors that subtree
+Thin wrapper over dl_alidocs.py: give it a link and it mirrors that subtree
 to disk — a single doc downloads just that doc, a folder downloads everything
-under it (folder vs leaf is auto-detected). Online docs export to .docx/.xlsx
-via Playwright when it's installed, otherwise they're saved as .url shortcuts.
+under it, and a knowledge-base overview link
+(https://alidocs.dingtalk.com/i/spaces/<spaceId>/overview) downloads the whole
+space. Online docs export to .docx/.xlsx via Playwright when it's installed,
+otherwise they're saved as .url shortcuts.
 
 Credentials and the default output directory come from env or
 ~/.taku/alidocs.json (legacy ~/.alidocs/config.json is still read). The config
@@ -121,10 +123,14 @@ def _resolve_cookie() -> str:
 
 # ── link parsing ───────────────────────────────────────────────────────────
 
-def parse_link(url: str) -> tuple[str, str | None]:
-    """Extract (dentryUuid, spaceId|None) from an alidocs node link, e.g.
-    https://alidocs.dingtalk.com/i/nodes/<uuid>?... — works for both a single
-    doc and a folder node."""
+def parse_link(url: str) -> tuple[str | None, str | None]:
+    """Extract (dentryUuid|None, spaceId|None) from an alidocs link.
+    Recognised forms:
+      - /i/nodes/<uuid>[?spaceId=...]                  → (uuid, space?)
+      - ?dentryUuid=<uuid> or ?nodeId=<uuid>           → (uuid, space?)
+      - /i/spaces/<spaceId>/overview                   → (None, spaceId)
+        (knowledge-base root page; root dentry is discovered later)
+    """
     u = (url or "").strip()
     if not u:
         die("empty --url")
@@ -140,15 +146,20 @@ def parse_link(url: str) -> tuple[str, str | None]:
         m = re.search(r"/nodes/([^/?#]+)", parsed.path)
         if m:
             uuid = m.group(1)
-    if not uuid:
-        die(f"could not extract a dentry UUID from {url!r}. Expected an alidocs "
-            "node link like https://alidocs.dingtalk.com/i/nodes/<uuid>")
     space = None
     for k in ("spaceId", "workspaceId"):
         if qs.get(k):
             space = qs[k][0]
             break
-    return uuid, space
+    if not space:
+        m = re.search(r"/spaces/([^/?#]+)", parsed.path)
+        if m:
+            space = m.group(1)
+    if not uuid and not space:
+        die(f"could not extract a dentry UUID or space ID from {url!r}. Expected "
+            "an alidocs link like https://alidocs.dingtalk.com/i/nodes/<uuid> "
+            "or https://alidocs.dingtalk.com/i/spaces/<spaceId>/overview")
+    return (uuid or None), space
 
 
 def _decide_playwright(no_playwright_flag: bool) -> bool:
@@ -164,21 +175,55 @@ def _decide_playwright(no_playwright_flag: bool) -> bool:
         return False
 
 
-def _resolve_space(session, uuid: str, space: str | None) -> str:
+def _die_login_expired() -> None:
+    die("not logged in — the cookie looks expired. Refresh it in "
+        f"{CONFIG_PATH}: open alidocs.dingtalk.com in a logged-in browser, "
+        "copy the full Cookie request header (DevTools → Network → any request "
+        "→ Request Headers → Cookie), and set it as `cookie`.")
+
+
+def _looks_like_login_page(text: str) -> bool:
+    return "统一身份认证" in text or ("<title>" in text and "登录" in text)
+
+
+def _resolve_node(session, uuid: str | None, space: str | None) -> tuple[str, str, str | None]:
+    """Returns (space_id, dentry_uuid, root_name_override).
+    `root_name_override` is the knowledge-base display name when the link is a
+    space overview (so the top-level folder mirrors the space's UI name instead
+    of the internal "#ROOT#" sentinel); None for /i/nodes/<uuid> links."""
     space = space or (_PROFILE.get("space_id") or None)
-    if space:
-        return str(space)
-    r = session.get(f"{dl.BASE}/i/nodes/{uuid}", timeout=20)
-    m = re.search(r'"spaceId":"([^"]+)"', r.text)
+    if uuid and space:
+        return str(space), uuid, None
+    if uuid:
+        r = session.get(f"{dl.BASE}/i/nodes/{uuid}", timeout=20)
+        m = re.search(r'"spaceId":"([^"]+)"', r.text)
+        if not m:
+            if _looks_like_login_page(r.text):
+                _die_login_expired()
+            die("could not discover spaceId from the page; add `space_id` to the config "
+                "or use a link that includes spaceId.")
+        return m.group(1), uuid, None
+    # uuid missing — must have space; fetch the root dentry from overview HTML
+    if not space:
+        die("link has neither a dentry UUID nor a space ID")
+    r = session.get(f"{dl.BASE}/i/spaces/{space}/overview", timeout=20)
+    m = re.search(r'"rootDentryUuid":"([^"]+)"', r.text)
     if not m:
-        if "统一身份认证" in r.text or "<title>" in r.text and "登录" in r.text:
-            die("not logged in — the cookie looks expired. Refresh it in "
-                f"{CONFIG_PATH}: open alidocs.dingtalk.com in a logged-in browser, "
-                "copy the full Cookie request header (DevTools → Network → any request "
-                "→ Request Headers → Cookie), and set it as `cookie`.")
-        die("could not discover spaceId from the page; add `space_id` to the config "
-            "or use a link that includes spaceId.")
-    return m.group(1)
+        if _looks_like_login_page(r.text):
+            _die_login_expired()
+        die(f"could not discover rootDentryUuid for space {space!r}; the space "
+            "may not exist or the cookie may lack access.")
+    root_uuid = m.group(1)
+    # Pull the space's display name out of the same JSON object — `name` sits
+    # near `rootDentryUuid` and the trailing `"id":"<space>"` confirms it's
+    # the space record (not a child dentry).
+    nm = re.search(
+        r'"rootDentryUuid":"' + re.escape(root_uuid)
+        + r'"[^{}]*?"name":"([^"\\]+)"[^{}]*?"id":"' + re.escape(str(space)) + r'"',
+        r.text,
+    )
+    space_name = nm.group(1) if nm else None
+    return str(space), root_uuid, space_name
 
 
 # ── commands ───────────────────────────────────────────────────────────────
@@ -188,8 +233,10 @@ def cmd_check(args: argparse.Namespace) -> None:
     a_token = _setting("ALIDOCS_A_TOKEN", "a_token") or None
     uuid, space = parse_link(args.url)
     session = dl.make_session(cookie, a_token)
-    space = _resolve_space(session, uuid, space)
+    space, uuid, name_override = _resolve_node(session, uuid, space)
     root = dl.fetch_info(session, uuid, space)
+    if name_override:
+        root.name = name_override
     print(json.dumps({
         "ok": True, "profile": PROFILE_NAME, "space_id": space,
         "dentry_uuid": uuid, "name": root.name, "type": root.dentry_type,
@@ -205,8 +252,10 @@ def cmd_fetch(args: argparse.Namespace) -> None:
 
     uuid, space = parse_link(args.url)
     session = dl.make_session(cookie, a_token)
-    space = _resolve_space(session, uuid, space)
+    space, uuid, name_override = _resolve_node(session, uuid, space)
     root = dl.fetch_info(session, uuid, space)
+    if name_override:
+        root.name = name_override
     out_root.mkdir(parents=True, exist_ok=True)
     print(f"[root]   {root.name} ({root.dentry_type}) → {out_root}", flush=True)
 

@@ -1,13 +1,14 @@
 ---
 name: alidocs
-description: Download a DingTalk / alidocs document — or a whole folder — from a shared link, to local disk. Use this skill whenever the user gives an alidocs.dingtalk.com link and wants the doc(s) saved locally.
+description: Download a DingTalk / alidocs document — or a whole folder, or an entire knowledge base — from a shared link, to local disk. Use this skill whenever the user gives an alidocs.dingtalk.com link and wants the doc(s) saved locally.
 ---
 
 # alidocs Skill
 
 You download DingTalk / alidocs documents to local disk via a helper script.
-Give it a node link and it mirrors that subtree: a single doc downloads just
-that doc; a folder downloads everything under it (folder vs leaf is auto-detected).
+Give it a link and it mirrors that subtree: a single doc downloads just that
+doc, a folder downloads everything under it, and a knowledge-base overview link
+(`/i/spaces/<spaceId>/overview`) downloads the whole space.
 
 ## Tool
 
@@ -75,7 +76,7 @@ Do NOT prompt the user for the cookie inline — they put it in the config file
 
 ## Notes
 
-- The link can be a doc or a folder — same command; no need to ask which.
+- The link can be a doc, a folder, or a whole knowledge base (`/i/spaces/<id>/overview`) — same command; no need to ask which.
 - Re-running skips files already downloaded (idempotent).
 - Existing-permission errors on a doc mean the account lacks 可查看/下载 rights — surface that, don't retry blindly.
 - This skill writes files to the user's disk. Confirm the output directory with the user if it's not the default and looks unusual.
