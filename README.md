@@ -15,9 +15,10 @@ A self-hosted [Claude Code](https://code.claude.com) plugin marketplace.
 | --- | --- |
 | [`zeppelin`](./plugins/zeppelin) | Run SQL / Spark / PySpark / shell on Apache Zeppelin with built-in risk control. |
 | [`starrocks`](./plugins/starrocks) | Run SQL on StarRocks over the MySQL protocol (pure-Python, no driver) with built-in risk control. |
+| [`mysql`](./plugins/mysql) | Run SQL on MySQL over the MySQL protocol (pure-Python; native + caching_sha2 auth) with built-in risk control. |
 | [`alidocs`](./plugins/alidocs) | Download a DingTalk / alidocs doc or whole folder from its link. |
 
-The data-query plugins (zeppelin, starrocks) share the same shape — risk
+The data-query plugins (zeppelin, starrocks, mysql) share the same shape — risk
 classification before execution, a schema/sample metadata cache, and
 credentials with named **profiles** for multiple environments.
 
@@ -40,6 +41,11 @@ fallback, so existing setups keep working.
     │   ├── .claude-plugin/plugin.json
     │   ├── skills/starrocks/SKILL.md
     │   ├── scripts/                  # starrocks.py + risk.py
+    │   └── README.md
+    ├── mysql/
+    │   ├── .claude-plugin/plugin.json
+    │   ├── skills/mysql/SKILL.md
+    │   ├── scripts/                  # mysql.py + risk.py + test_mysql.py
     │   └── README.md
     └── alidocs/
         ├── .claude-plugin/plugin.json

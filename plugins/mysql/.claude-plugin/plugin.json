@@ -1,0 +1,6 @@
+{
+  "name": "mysql",
+  "description": "Run SQL against MySQL (pure-Python, no driver) over the MySQL wire protocol. Supports mysql_native_password and caching_sha2_password (with TLS for first-time auth). Classifies risk and asks for confirmation before high-risk operations; caches table schema + samples.",
+  "version": "1.0.0",
+  "license": "MIT"
+}

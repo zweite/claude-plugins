@@ -16,6 +16,11 @@
       "description": "Run SQL against StarRocks over the MySQL protocol (pure-Python) with built-in risk control and a schema/sample cache."
     },
     {
+      "name": "mysql",
+      "source": "./plugins/mysql",
+      "description": "Run SQL against MySQL over the MySQL protocol (pure-Python; native + caching_sha2 auth) with built-in risk control and a schema/sample cache."
+    },
+    {
       "name": "alidocs",
       "source": "./plugins/alidocs",
       "description": "Download a DingTalk / alidocs document or whole folder from its link, preserving structure."
