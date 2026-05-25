@@ -1,6 +1,6 @@
 {
   "name": "alidocs",
-  "description": "Download a DingTalk / alidocs document or an entire folder from its link, preserving structure. Online docs export to .docx/.xlsx via Playwright when installed.",
-  "version": "1.0.1",
+  "description": "Move files between local disk and DingTalk / alidocs. Fetch a doc, folder, or whole knowledge base from its link (online docs export to .docx/.xlsx via Playwright when installed); push or sync a local directory tree back up via OSS-direct upload (oss2).",
+  "version": "1.1.0",
   "license": "MIT"
 }

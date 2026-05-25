@@ -28,7 +28,7 @@
     {
       "name": "alidocs",
       "source": "./plugins/alidocs",
-      "description": "Download a DingTalk / alidocs document or whole folder from its link, preserving structure."
+      "description": "Move files between local disk and DingTalk / alidocs — fetch a doc / folder / whole knowledge base, or push / sync a local directory tree back up."
     }
   ]
 }
