@@ -1,0 +1,4 @@
+# MongoDB driver (required)
+pymongo>=4.0,<5.0
+# Required for mongodb+srv:// URIs (Atlas).
+dnspython>=2.0

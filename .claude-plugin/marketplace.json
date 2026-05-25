@@ -21,6 +21,11 @@
       "description": "Run SQL against MySQL over the MySQL protocol (pure-Python; native + caching_sha2 auth) with built-in risk control and a schema/sample cache."
     },
     {
+      "name": "mongodb",
+      "source": "./plugins/mongodb",
+      "description": "Query and inspect MongoDB collections (pymongo; supports Atlas SRV) with a mongo-aware risk classifier and a per-collection schema/sample cache. JSON-spec queries (find/aggregate/count/distinct/runCommand + writes)."
+    },
+    {
       "name": "alidocs",
       "source": "./plugins/alidocs",
       "description": "Download a DingTalk / alidocs document or whole folder from its link, preserving structure."

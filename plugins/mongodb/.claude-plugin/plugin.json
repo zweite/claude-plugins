@@ -1,0 +1,6 @@
+{
+  "name": "mongodb",
+  "description": "Query and inspect MongoDB (uses pymongo). JSON-spec queries (find/aggregate/count/distinct/runCommand + writes), a built-in mongo-aware risk classifier that asks for confirmation on writes/admin ops, and a per-collection schema/sample cache.",
+  "version": "1.0.0",
+  "license": "MIT"
+}
