@@ -17,7 +17,7 @@ A self-hosted [Claude Code](https://code.claude.com) plugin marketplace.
 | [`starrocks`](./plugins/starrocks) | Run SQL on StarRocks over the MySQL protocol (pure-Python, no driver) with built-in risk control. |
 | [`mysql`](./plugins/mysql) | Run SQL on MySQL over the MySQL protocol (pure-Python; native + caching_sha2 auth) with built-in risk control. |
 | [`mongodb`](./plugins/mongodb) | Query MongoDB via JSON specs (pymongo; supports Atlas SRV) with a mongo-aware risk classifier and a per-collection schema/sample cache. |
-| [`alidocs`](./plugins/alidocs) | Download a DingTalk / alidocs doc, folder, or whole knowledge base from its link. |
+| [`alidocs`](./plugins/alidocs) | Download a DingTalk / alidocs doc, folder, or whole knowledge base from its link — and push / sync a local directory back up. |
 
 The data-query plugins (zeppelin, starrocks, mysql, mongodb) share the same shape — risk
 classification before execution, a schema/sample metadata cache, and
@@ -56,7 +56,7 @@ fallback, so existing setups keep working.
     └── alidocs/
         ├── .claude-plugin/plugin.json
         ├── skills/alidocs/SKILL.md
-        ├── scripts/                  # alidocs.py + dl_alidocs.py
+        ├── scripts/                  # alidocs.py + dl_alidocs.py + test_upload_e2e.py
         └── README.md
 ```
 
