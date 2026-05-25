@@ -1,0 +1,10 @@
+{
+  "base_url": "https://zeppelin.example.com",
+  "username": "alice",
+  "password": "REPLACE_ME",
+  "note_dir": "__skill/zeppelin",
+  "keep_notes": false,
+  "timeout_seconds": 300,
+  "poll_interval_seconds": 1.5,
+  "cache_ttl_days": 30
+}

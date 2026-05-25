@@ -1,0 +1,5 @@
+{
+  "cookie_file": "~/.taku/alidocs.cookie",
+  "default_out_dir": "~/Downloads/alidocs",
+  "use_playwright": true
+}

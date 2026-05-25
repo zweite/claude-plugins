@@ -1,0 +1,6 @@
+{
+  "uri": "mongodb+srv://alice:REPLACE_ME@cluster.example.mongodb.net/",
+  "database": "app",
+  "timeout_seconds": 30,
+  "cache_ttl_days": 30
+}

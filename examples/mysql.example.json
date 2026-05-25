@@ -1,0 +1,11 @@
+{
+  "host": "db.example.com",
+  "port": 3306,
+  "user": "alice",
+  "password": "REPLACE_ME",
+  "database": "app",
+  "ssl": false,
+  "ssl_verify": true,
+  "timeout_seconds": 30,
+  "cache_ttl_days": 30
+}

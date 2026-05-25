@@ -1,0 +1,9 @@
+{
+  "host": "fe.starrocks.example.com",
+  "port": 9030,
+  "user": "alice",
+  "password": "REPLACE_ME",
+  "database": "analytics",
+  "timeout_seconds": 30,
+  "cache_ttl_days": 30
+}

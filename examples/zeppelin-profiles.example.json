@@ -1,0 +1,17 @@
+{
+  "default_profile": "prod",
+  "cache_ttl_days": 30,
+  "timeout_seconds": 300,
+  "profiles": {
+    "prod": {
+      "base_url": "https://zeppelin-prod.example.com",
+      "username": "alice",
+      "password": "REPLACE_ME"
+    },
+    "staging": {
+      "base_url": "https://zeppelin-staging.example.com",
+      "username": "alice",
+      "password": "REPLACE_ME"
+    }
+  }
+}

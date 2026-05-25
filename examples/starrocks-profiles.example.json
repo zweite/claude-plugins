@@ -1,0 +1,19 @@
+{
+  "default_profile": "prod",
+  "cache_ttl_days": 30,
+  "profiles": {
+    "prod": {
+      "host": "fe-prod.starrocks.example.com",
+      "port": 9030,
+      "user": "alice",
+      "password": "REPLACE_ME",
+      "database": "analytics"
+    },
+    "staging": {
+      "host": "fe-staging.starrocks.example.com",
+      "port": 9030,
+      "user": "alice",
+      "password": "REPLACE_ME"
+    }
+  }
+}
