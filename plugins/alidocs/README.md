@@ -1,9 +1,10 @@
 # alidocs
 
-在 Claude Code 里给一个钉钉文档 / alidocs 链接，把对应文档（或整个文件夹）下载到本地。
+在 Claude Code 里给一个钉钉文档 / alidocs 链接，把对应文档（或整个文件夹、整个知识库）下载到本地。
 
 - 给**单篇文档链接** → 下载该文档
 - 给**文件夹链接** → 递归下载文件夹下所有文档（保留目录结构）
+- 给**知识库 overview 链接**（`/i/spaces/<id>/overview`）→ 整库下载，顶层文件夹用知识库的显示名
 - 不指定目录时，落到配置的默认目录
 
 底层封装 `dl_alidocs.py`：二进制文件走 API 直接下载；在线文档（`.adoc`→`.docx`、`.axls`→`.xlsx`）用 Playwright 驱动编辑器导出；其余在线类型存为 `.url` 快捷方式 + `.meta.json`。
@@ -74,4 +75,8 @@ python3 "$ROOT/scripts/alidocs.py" fetch --url 'https://alidocs.dingtalk.com/i/n
 python3 "$ROOT/scripts/alidocs.py" fetch --url '<link>' --out ~/docs/proj --no-playwright
 ```
 
-支持的链接形如 `https://alidocs.dingtalk.com/i/nodes/<dentryUuid>`（doc 或 folder 都行），也兼容带 `?dentryUuid=`、`?spaceId=` 的形式。
+支持的链接形式：
+
+- `https://alidocs.dingtalk.com/i/nodes/<dentryUuid>` — 单文档或文件夹（doc/folder 自动识别）
+- `?dentryUuid=` / `?nodeId=` / `?spaceId=` 等查询参数形式
+- `https://alidocs.dingtalk.com/i/spaces/<spaceId>/overview` — 整个知识库
