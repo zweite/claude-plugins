@@ -1,0 +1,14 @@
+{
+  "default_profile": "prod",
+  "cache_ttl_days": 30,
+  "profiles": {
+    "prod": {
+      "uri": "mongodb+srv://alice:REPLACE_ME@cluster-prod.example.mongodb.net/",
+      "database": "app"
+    },
+    "staging": {
+      "uri": "mongodb://alice:REPLACE_ME@stage.example.com:27017/",
+      "database": "app"
+    }
+  }
+}

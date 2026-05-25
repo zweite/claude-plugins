@@ -1,0 +1,14 @@
+{
+  "default_profile": "personal",
+  "default_out_dir": "~/Downloads/alidocs",
+  "use_playwright": true,
+  "profiles": {
+    "personal": {
+      "cookie_file": "~/.taku/alidocs.personal.cookie"
+    },
+    "work": {
+      "cookie_file": "~/.taku/alidocs.work.cookie",
+      "default_out_dir": "~/Documents/work-alidocs"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "default_profile": "prod",
+  "cache_ttl_days": 30,
+  "profiles": {
+    "prod": {
+      "host": "db-prod.example.com",
+      "port": 3306,
+      "user": "alice",
+      "password": "REPLACE_ME",
+      "database": "app",
+      "ssl": true,
+      "ssl_verify": true
+    },
+    "staging": {
+      "host": "db-staging.example.com",
+      "port": 3306,
+      "user": "alice",
+      "password": "REPLACE_ME",
+      "database": "app"
+    }
+  }
+}

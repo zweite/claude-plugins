@@ -14,9 +14,9 @@ chmod 600 ~/.taku/zeppelin.json     # contains a password / session token
 | --- | --- | --- |
 | zeppelin  | [`zeppelin.example.json`](./zeppelin.example.json)   | [`zeppelin-profiles.example.json`](./zeppelin-profiles.example.json) |
 | starrocks | [`starrocks.example.json`](./starrocks.example.json) | [`starrocks-profiles.example.json`](./starrocks-profiles.example.json) |
-| mysql     | [`mysql.example.json`](./mysql.example.json)         | same `profiles` shape as zeppelin/starrocks |
-| mongodb   | [`mongodb.example.json`](./mongodb.example.json)     | same `profiles` shape as zeppelin/starrocks |
-| alidocs   | [`alidocs.example.json`](./alidocs.example.json)     | same `profiles` shape (selector: `ALIDOCS_PROFILE`) |
+| mysql     | [`mysql.example.json`](./mysql.example.json)         | [`mysql-profiles.example.json`](./mysql-profiles.example.json) |
+| mongodb   | [`mongodb.example.json`](./mongodb.example.json)     | [`mongodb-profiles.example.json`](./mongodb-profiles.example.json) |
+| alidocs   | [`alidocs.example.json`](./alidocs.example.json)     | [`alidocs-profiles.example.json`](./alidocs-profiles.example.json) (selector: `ALIDOCS_PROFILE`) |
 
 ## Multiple environments (profiles)
 
