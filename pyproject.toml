@@ -1,0 +1,10 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+exclude = ["**/__pycache__"]
+
+[tool.ruff.lint]
+# Default ruff rules (E4 imports, E7 misc, E9 syntax, F pyflakes) minus a few
+# stylistic ones that conflict with the dense single-line patterns the alidocs
+# downloader uses on purpose.
+ignore = ["E701", "E702"]

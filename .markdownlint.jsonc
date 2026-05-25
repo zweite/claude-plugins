@@ -1,0 +1,14 @@
+// markdownlint config — relaxed for prose-heavy SKILL.md / README docs.
+// Re-enable rules incrementally as the docs get a cleanup pass.
+{
+  "default": true,
+  "MD013": false,
+  "MD024": { "siblings_only": true },
+  "MD031": false,
+  "MD032": false,
+  "MD033": false,
+  "MD034": false,
+  "MD040": false,
+  "MD041": false,
+  "MD060": false
+}
