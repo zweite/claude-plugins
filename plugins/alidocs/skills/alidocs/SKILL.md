@@ -51,11 +51,32 @@ request header copied from a logged-in alidocs browser session.
 - `default_out_dir` — where downloads go when `--out` isn't passed (default `~/Downloads/alidocs`).
 - `use_playwright` — force on/off; omit to auto-detect.
 - `space_id` — optional; auto-discovered from the link's page otherwise.
-- Multiple accounts: use a `profiles` map + `default_profile`, selected with
-  `--profile NAME` / `ALIDOCS_PROFILE`.
 
 Do NOT prompt the user for the cookie inline — they put it in the config file
 (`chmod 600`, it contains session tokens).
+
+### Multiple accounts (profiles)
+
+Instead of a flat config, the file can hold a `profiles` map for multiple
+accounts (personal vs work, etc.) — same shape as the other taku plugins:
+
+```json
+{
+  "default_profile": "personal",
+  "default_out_dir": "~/Downloads/alidocs",
+  "profiles": {
+    "personal": { "cookie_file": "~/.taku/alidocs.personal.cookie" },
+    "work":     { "cookie_file": "~/.taku/alidocs.work.cookie",
+                  "default_out_dir": "~/Documents/work-alidocs" }
+  }
+}
+```
+
+- Pick a profile with `--profile NAME` or `ALIDOCS_PROFILE`; else
+  `default_profile`, else the sole profile. A flat config (no `profiles`) is
+  the implicit `default`.
+- Top-level keys outside `profiles` are shared defaults merged into each profile.
+- Pass `--profile` BEFORE the subcommand: `alidocs.py --profile work fetch ...`.
 
 ## Workflow — download
 
