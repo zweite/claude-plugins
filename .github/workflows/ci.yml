@@ -43,17 +43,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Parse every .json file
+      - name: Parse every .json / .jsonc file
         run: |
-          set -e
-          fail=0
-          while IFS= read -r f; do
-            if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" 2>/dev/null; then
-              echo "::error file=$f::invalid JSON"
-              fail=1
-            fi
-          done < <(git ls-files '*.json' '*.jsonc')
-          exit "$fail"
+          python3 - <<'PY'
+          import json, re, subprocess, sys
+          files = subprocess.check_output(
+              ['git', 'ls-files', '*.json', '*.jsonc']
+          ).decode().split()
+          fail = 0
+          for f in files:
+              txt = open(f).read()
+              if f.endswith('.jsonc'):
+                  # strip // line comments and /* */ block comments
+                  txt = re.sub(r'/\*.*?\*/', '', txt, flags=re.S)
+                  txt = re.sub(r'//[^\n]*', '', txt)
+              try:
+                  json.loads(txt)
+              except Exception as e:
+                  print(f'::error file={f}::invalid JSON: {e}')
+                  fail = 1
+          sys.exit(fail)
+          PY
 
   lint:
     name: lint (ruff + actionlint + markdownlint)
@@ -78,4 +88,7 @@ jobs:
       - name: markdownlint
         uses: DavidAnson/markdownlint-cli2-action@v17
         with:
-          globs: "**/*.md"
+          globs: |
+            **/*.md
+            !node_modules
+            !**/node_modules
