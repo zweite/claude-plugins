@@ -214,6 +214,157 @@ def write_meta(out_path: Path, node: Node) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Upload primitives (mkdir / file create / overwrite / rename / recycle / import)
+# ---------------------------------------------------------------------------
+#
+# Conflict-strategy enum (server is case-insensitive; we mirror the JS-source
+# lowercase form):
+#   auto_rename              — append "(N)" suffix to avoid collision
+#   over_write               — replace contents (creates a new file version)
+#   return_existing_dentry   — well-defined for createfolder; returns existing
+#   return_existing_error    — avoid: 500-storms in practice
+#
+# All write endpoints return {status:200, isSuccess:true, data:<dentry>} on
+# success; raise on anything else.
+
+CONFLICT_AUTO_RENAME = "auto_rename"
+CONFLICT_OVER_WRITE = "over_write"
+CONFLICT_RETURN_EXISTING = "return_existing_dentry"
+
+
+def _expect_ok(r: requests.Response, label: str) -> dict:
+    if not r.ok:
+        raise RuntimeError(f"{label} {r.status_code}: {r.text[:300]}")
+    body = r.json()
+    if not body.get("isSuccess"):
+        raise RuntimeError(f"{label} not isSuccess: {r.text[:300]}")
+    return body.get("data") or {}
+
+
+def _node_from_data(d: dict) -> Node:
+    return Node(uuid=d["dentryUuid"], name=d.get("name", d["dentryUuid"]),
+                dentry_type=d.get("dentryType", "file"),
+                has_children=bool(d.get("hasChildren", False)), raw=d)
+
+
+def create_folder(session: requests.Session, parent_uuid: str, name: str,
+                  space_id: str, conflict: str = CONFLICT_RETURN_EXISTING) -> Node:
+    r = _post_with_proxy_retry(session, BASE + "/box/api/v2/dentry/createfolder",
+        json={"parentDentryUuid": parent_uuid, "name": name, "spaceId": space_id,
+              "conflictHandleStrategy": conflict}, timeout=20)
+    return _node_from_data(_expect_ok(r, "createfolder"))
+
+
+def _oss_put(sts: dict, payload: bytes) -> None:
+    try:
+        import oss2  # lazy: optional dep
+    except ImportError as e:
+        raise RuntimeError("oss2 is required for uploads. Install with: pip install oss2") from e
+    auth = oss2.StsAuth(sts["accessKeyId"], sts["accessKeySecret"], sts["accessToken"])
+    bucket = oss2.Bucket(auth, "https://" + sts["endPoint"], sts["bucket"])
+    bucket.put_object(sts["objectKey"], payload)
+
+
+def upload_file(session: requests.Session, local_path: Path, parent_uuid: str,
+                space_id: str, conflict: str = CONFLICT_AUTO_RENAME,
+                target_name: str | None = None) -> Node:
+    """uploadinfo → OSS STS PUT → commit. Returns the resulting Node (new dentry)."""
+    name = target_name or local_path.name
+    payload = local_path.read_bytes()
+    r = _post_with_proxy_retry(session, BASE + "/box/api/v2/file/uploadinfo",
+        json={"uploadType": "STS_SIGNATURE",
+              "supportUploadTypes": ["STS_SIGNATURE", "HTTP_TO_CENTER"],
+              "parentDentryUuid": parent_uuid, "spaceId": space_id,
+              "fileSize": len(payload), "name": name,
+              "conflictHandleStrategy": conflict, "multipart": False}, timeout=30)
+    info = _expect_ok(r, "uploadinfo")
+    _oss_put(info["stsSignatureInfo"], payload)
+    r = _post_with_proxy_retry(session, BASE + "/box/api/v2/file/commit",
+        json={"parentDentryUuid": parent_uuid, "uploadKey": info["uploadKey"],
+              "fileSize": len(payload), "name": name,
+              "conflictHandleStrategy": conflict}, timeout=30)
+    return _node_from_data(_expect_ok(r, "commit"))
+
+
+def overwrite_file(session: requests.Session, target_uuid: str, local_path: Path,
+                   target_name: str | None = None) -> Node:
+    """uploadInfoForUpdateVersion → OSS STS PUT → commitForUpdateVersion.
+    Preserves dentry uuid, bumps version. target_name defaults to local filename."""
+    name = target_name or local_path.name
+    payload = local_path.read_bytes()
+    r = _post_with_proxy_retry(session, BASE + "/box/api/v2/file/uploadInfoForUpdateVersion",
+        json={"uploadType": "STS_SIGNATURE",
+              "supportUploadTypes": ["STS_SIGNATURE", "HTTP_TO_CENTER"],
+              "targetDentryUuid": target_uuid, "fileSize": len(payload),
+              "name": name, "conflictHandleStrategy": CONFLICT_OVER_WRITE,
+              "multipart": False}, timeout=30)
+    info = _expect_ok(r, "uploadInfoForUpdateVersion")
+    _oss_put(info["stsSignatureInfo"], payload)
+    r = _post_with_proxy_retry(session, BASE + "/box/api/v2/file/commitForUpdateVersion",
+        json={"targetDentryUuid": target_uuid, "uploadKey": info["uploadKey"],
+              "fileSize": len(payload), "name": name,
+              "conflictHandleStrategy": CONFLICT_OVER_WRITE}, timeout=30)
+    return _node_from_data(_expect_ok(r, "commitForUpdateVersion"))
+
+
+def rename_dentry(session: requests.Session, uuid: str, space_id: str, new_name: str) -> Node:
+    r = _post_with_proxy_retry(session, BASE + "/box/api/v2/dentry/rename",
+        json={"dentryUuid": uuid, "spaceId": space_id, "name": new_name}, timeout=20)
+    return _node_from_data(_expect_ok(r, "rename"))
+
+
+def recycle_dentry(session: requests.Session, uuid: str, space_id: str) -> None:
+    r = _post_with_proxy_retry(session, BASE + "/box/api/v2/dentry/recycle",
+        json={"dentryUuid": uuid, "spaceId": space_id}, timeout=20)
+    _expect_ok(r, "recycle")
+
+
+# Best-effort online-doc conversion. The web client uses an RPC bridge
+# (/r/Adaptor/...) for the upload-temp-resource step which is not reachable
+# from a cookie-authenticated HTTP request on the public cloud. We expose
+# `import_document` for parity, but it currently surfaces the same 400/52600006
+# the JS produces without a valid `downloadUrl`; until that surface is opened
+# we fall back to a binary upload. Callers should not block uploads on this.
+
+def import_document(session: requests.Session, parent_uuid: str, name: str,
+                    suffix: str, download_url: str, file_size: int,
+                    document_type: str) -> str:
+    """POST /box/api/v2/import/document. Returns taskId for batchget polling.
+    suffix like '.md'; document_type one of WORD / EXCEL / MIND."""
+    body = {"parentDentryUuid": parent_uuid, "name": name, "suffix": suffix,
+            "downloadUrl": download_url, "fileSize": file_size,
+            "documentType": document_type}
+    r = _post_with_proxy_retry(session, BASE + "/box/api/v2/import/document",
+                               json=body, timeout=30)
+    data = _expect_ok(r, "import/document")
+    return data["id"]
+
+
+def poll_import_tasks(session: requests.Session, task_ids: list[str],
+                      timeout_s: int = 120, interval_s: float = 2.0) -> list[dict]:
+    deadline = time.time() + timeout_s
+    last: list[dict] = []
+    while time.time() < deadline:
+        r = _post_with_proxy_retry(session, BASE + "/box/api/v2/import/task/batchget",
+                                   json={"taskIds": task_ids}, timeout=20)
+        last = _expect_ok(r, "import/task/batchget") or []
+        if last and all((rec.get("taskStatus") or rec.get("status")) in
+                        ("SUCCESS", "ERROR", "TIMEOUT", "FAILED") for rec in last):
+            return last
+        time.sleep(interval_s)
+    return last
+
+
+# Suffix → documentType for /box/api/v2/import/document (server-side conversion).
+# Informational only — see import_document() note re: /r/Adaptor.
+IMPORT_DOC_TYPE = {
+    ".docx": "WORD", ".doc": "WORD", ".txt": "WORD",
+    ".md": "WORD", ".markdown": "WORD",
+    ".xlsx": "EXCEL", ".xls": "EXCEL", ".xmind": "MIND",
+}
+
+
+# ---------------------------------------------------------------------------
 # Playwright-based export for .adoc → .docx
 # ---------------------------------------------------------------------------
 

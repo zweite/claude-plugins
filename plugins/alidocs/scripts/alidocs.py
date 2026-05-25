@@ -281,6 +281,300 @@ def cmd_fetch(args: argparse.Namespace) -> None:
                      ensure_ascii=False))
 
 
+# ── upload / sync (local → alidocs) ────────────────────────────────────────
+
+import fnmatch  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
+
+DEFAULT_EXCLUDES = (".*", "__pycache__", "node_modules", "*.pyc", ".DS_Store")
+
+
+def _glob_match(rel: str, patterns: tuple[str, ...]) -> bool:
+    parts = rel.split("/")
+    for pat in patterns:
+        if fnmatch.fnmatch(rel, pat): return True
+        if any(fnmatch.fnmatch(p, pat) for p in parts): return True
+    return False
+
+
+def _walk_local(src: Path, includes: tuple[str, ...], excludes: tuple[str, ...]):
+    """Yield (rel_posix, abs_path, is_dir) for every entry under src.
+    Symlinked dirs are skipped (avoid loops); symlinked files are followed."""
+    src = src.resolve()
+    if src.is_file():
+        rel = src.name
+        if includes and not _glob_match(rel, includes): return
+        if _glob_match(rel, excludes): return
+        yield rel, src, False
+        return
+    for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
+        rel_dir = os.path.relpath(dirpath, src).replace(os.sep, "/")
+        prefix = "" if rel_dir == "." else rel_dir + "/"
+        # Prune excluded dirs in-place
+        dirnames[:] = [d for d in dirnames if not _glob_match(prefix + d, excludes)]
+        for d in dirnames:
+            yield prefix + d, Path(dirpath) / d, True
+        for fn in filenames:
+            rel = prefix + fn
+            if includes and not _glob_match(rel, includes): continue
+            if _glob_match(rel, excludes): continue
+            yield rel, Path(dirpath) / fn, False
+
+
+def _list_remote_tree(session, root_uuid: str, space_id: str) -> dict[str, dl.Node]:
+    """Recursive map of remote tree keyed by posix-relative path (folder paths
+    end without trailing slash; root entry is keyed by '')."""
+    out: dict[str, dl.Node] = {}
+    def walk(uuid: str, prefix: str) -> None:
+        for c in dl.list_children(session, uuid, space_id):
+            rel = (prefix + "/" + c.name).lstrip("/")
+            out[rel] = c
+            if c.is_folder:
+                walk(c.uuid, rel)
+    walk(root_uuid, "")
+    return out
+
+
+@dataclass
+class Action:
+    kind: str          # "mkdir" / "upload" / "overwrite" / "skip" / "warn" / "prune"
+    rel: str           # posix path relative to dest root
+    local: Path | None
+    remote: dl.Node | None
+    detail: str = ""
+
+    def fmt(self) -> str:
+        mark = {"mkdir":"+", "upload":"+", "overwrite":"~", "skip":"=",
+                "warn":"!", "prune":"-"}.get(self.kind, "?")
+        kind = "dir " if self.kind == "mkdir" else "file"
+        size = ""
+        if self.local and self.local.is_file():
+            size = f" ({self.local.stat().st_size}B)"
+        return f"  {mark} {kind:<4}  {self.rel:<50} {self.detail}{size}"
+
+
+def _plan_push(session, src: Path, dest_uuid: str, space_id: str,
+               on_conflict: str, includes: tuple[str, ...], excludes: tuple[str, ...],
+               max_size: int | None, prune: bool) -> list[Action]:
+    remote = _list_remote_tree(session, dest_uuid, space_id)
+    actions: list[Action] = []
+    local_keys: set[str] = set()
+    for rel, p, is_dir in _walk_local(src, includes, excludes):
+        local_keys.add(rel)
+        existing = remote.get(rel)
+        if is_dir:
+            if existing and existing.is_folder:
+                actions.append(Action("skip", rel, p, existing, "folder exists"))
+            elif existing:
+                actions.append(Action("warn", rel, p, existing, "remote is a file"))
+            else:
+                actions.append(Action("mkdir", rel, p, None))
+            continue
+        size = p.stat().st_size
+        if max_size and size > max_size:
+            actions.append(Action("warn", rel, p, existing, f"size {size} > max"))
+            continue
+        if existing and not existing.is_folder:
+            r_size = existing.raw.get("fileSize")
+            if on_conflict == "skip-if-same":
+                if r_size == size:
+                    actions.append(Action("skip", rel, p, existing, f"same size {size}"))
+                else:
+                    actions.append(Action("overwrite", rel, p, existing,
+                                          f"size {r_size}→{size}"))
+            elif on_conflict == "overwrite":
+                actions.append(Action("overwrite", rel, p, existing, "force"))
+            elif on_conflict == "rename":
+                actions.append(Action("upload", rel, p, existing, "auto-rename"))
+            elif on_conflict == "error":
+                actions.append(Action("warn", rel, p, existing, "collision (error mode)"))
+            else:
+                actions.append(Action("warn", rel, p, existing,
+                                      f"unknown on_conflict={on_conflict!r}"))
+        elif existing:
+            actions.append(Action("warn", rel, p, existing, "remote is a folder"))
+        else:
+            actions.append(Action("upload", rel, p, None))
+    if prune:
+        for rel, node in remote.items():
+            if rel not in local_keys:
+                actions.append(Action("prune", rel, None, node,
+                                      "missing locally — will recycle"))
+    return actions
+
+
+def _create_dest_path(session, space_id: str, root_uuid: str, segments: list[str]) -> str:
+    """Walk-or-create a chain of folders under root_uuid; return leaf uuid."""
+    cur = root_uuid
+    cur_children: dict[str, dl.Node] = {n.name: n for n in dl.list_children(session, cur, space_id)}
+    for seg in segments:
+        if not seg: continue
+        existing = cur_children.get(seg)
+        if existing and existing.is_folder:
+            cur = existing.uuid
+        elif existing:
+            die(f"--create-dest segment {seg!r} exists as a non-folder")
+        else:
+            n = dl.create_folder(session, cur, seg, space_id)
+            cur = n.uuid
+            print(f"[mkdir]  {seg}  uuid={cur}", flush=True)
+        cur_children = {n.name: n for n in dl.list_children(session, cur, space_id)}
+    return cur
+
+
+def _resolve_push_dest(session, args) -> tuple[str, str, str]:
+    """Return (space_id, dest_folder_uuid, dest_name)."""
+    if args.dest:
+        uuid, space = parse_link(args.dest)
+        space_id, dest_uuid, name_override = _resolve_node(session, uuid, space)
+        root = dl.fetch_info(session, dest_uuid, space_id)
+        if not root.is_folder:
+            die(f"--dest must be a folder link, got {root.dentry_type!r} ({root.name})")
+        return space_id, dest_uuid, (name_override or root.name)
+    if args.create_dest:
+        # form: "<folder-link-or-uuid> :: path/with/slashes"  (split on '::') OR
+        #       "<folder-link>/<path>"  — for plain links we slice at the
+        #       node-uuid boundary so the remainder is the to-create path.
+        spec = args.create_dest
+        if "::" in spec:
+            head, _, tail = spec.partition("::")
+            head = head.strip(); tail = tail.strip()
+        else:
+            # find the dentry-link prefix, treat rest as the path to create
+            m = re.search(r"(https?://[^/]+/i/(?:nodes|spaces)/[^/?#]+(?:\?[^#/]*)?)(/.*)?", spec)
+            if m:
+                head = m.group(1)
+                tail = (m.group(2) or "").lstrip("/")
+            else:
+                # treat as raw "<uuid>/path"
+                head, _, tail = spec.partition("/")
+        uuid, space = parse_link(head)
+        space_id, base_uuid, name_override = _resolve_node(session, uuid, space)
+        base = dl.fetch_info(session, base_uuid, space_id)
+        if not base.is_folder:
+            die(f"--create-dest base must be a folder, got {base.dentry_type!r}")
+        segments = [s for s in tail.split("/") if s]
+        if not segments:
+            return space_id, base_uuid, base.name
+        leaf = _create_dest_path(session, space_id, base_uuid, segments)
+        return space_id, leaf, segments[-1]
+    die("either --dest <folder-link> or --create-dest <base-link>/path/segments is required")
+
+
+def _confirm(prompt: str) -> bool:
+    try:
+        ans = input(f"{prompt} [y/N] ").strip().lower()
+    except EOFError:
+        return False
+    return ans in ("y", "yes")
+
+
+def _do_push(args, default_conflict: str) -> None:
+    cookie = _resolve_cookie()
+    a_token = _setting("ALIDOCS_A_TOKEN", "a_token") or None
+    on_conflict = args.on_conflict or default_conflict
+    if on_conflict not in ("skip-if-same", "overwrite", "rename", "error"):
+        die("--on-conflict must be one of skip-if-same / overwrite / rename / error")
+    src = Path(os.path.expanduser(args.src)).resolve()
+    if not src.exists():
+        die(f"--src {src} does not exist")
+    excludes = tuple(args.exclude) if args.exclude else DEFAULT_EXCLUDES
+    includes = tuple(args.include) if args.include else ()
+    session = dl.make_session(cookie, a_token)
+    space_id, dest_uuid, dest_name = _resolve_push_dest(session, args)
+    print(f"[dest]   {dest_name} (uuid={dest_uuid}, space={space_id})", flush=True)
+
+    actions = _plan_push(session, src, dest_uuid, space_id, on_conflict,
+                         includes, excludes, args.max_size or None, args.prune)
+    print(f"[plan]   {len(actions)} action(s):", flush=True)
+    for a in actions: print(a.fmt(), flush=True)
+    if args.dry_run:
+        print(json.dumps({"ok": True, "dry_run": True, "profile": PROFILE_NAME,
+                          "actions": len(actions)}, ensure_ascii=False))
+        return
+    if not args.yes and not _confirm("apply?"):
+        die("aborted")
+
+    # uuid map: posix rel → remote dentry uuid (folders we just made, plus
+    # already-existing remote nodes from the plan). The plan ran against a
+    # snapshot, so we trust those uuids unless conflict-overwrite paths see
+    # the remote dentry change mid-run.
+    rel_to_uuid: dict[str, str] = {"": dest_uuid}
+    # seed from plan's "existing" remotes
+    for a in actions:
+        if a.remote: rel_to_uuid[a.rel] = a.remote.uuid
+
+    def parent_uuid(rel: str) -> str:
+        parent = "/".join(rel.split("/")[:-1])
+        return rel_to_uuid.get(parent, dest_uuid)
+
+    stats = {k: 0 for k in ("mkdir", "upload", "overwrite", "skip", "warn", "prune", "errors")}
+    for a in sorted(actions, key=lambda a: (a.rel.count("/"), a.rel)):
+        try:
+            if a.kind == "mkdir":
+                n = dl.create_folder(session, parent_uuid(a.rel), a.local.name, space_id)
+                rel_to_uuid[a.rel] = n.uuid
+                print(f"[mkdir]  {a.rel}", flush=True)
+            elif a.kind == "upload":
+                conflict = dl.CONFLICT_AUTO_RENAME if on_conflict == "rename" else dl.CONFLICT_AUTO_RENAME
+                n = dl.upload_file(session, a.local, parent_uuid(a.rel), space_id,
+                                   conflict=conflict, target_name=a.local.name)
+                rel_to_uuid[a.rel] = n.uuid
+                print(f"[upload] {a.rel}  ({a.local.stat().st_size}B → {n.name})", flush=True)
+            elif a.kind == "overwrite":
+                n = dl.overwrite_file(session, a.remote.uuid, a.local,
+                                      target_name=a.local.name)
+                rel_to_uuid[a.rel] = n.uuid
+                print(f"[update] {a.rel}  v→{n.raw.get('version','?')}", flush=True)
+            elif a.kind == "prune":
+                dl.recycle_dentry(session, a.remote.uuid, space_id)
+                print(f"[prune]  {a.rel}", flush=True)
+            elif a.kind == "skip":
+                pass
+            elif a.kind == "warn":
+                print(f"[warn]   {a.rel}: {a.detail}", flush=True)
+            stats[a.kind] = stats.get(a.kind, 0) + 1
+        except Exception as e:
+            stats["errors"] += 1
+            print(f"[err]    {a.rel}: {e}", flush=True)
+
+    print(json.dumps({"ok": stats["errors"] == 0, "profile": PROFILE_NAME,
+                      "dest": dest_name, "space_id": space_id,
+                      "dest_uuid": dest_uuid, "stats": stats}, ensure_ascii=False))
+
+
+def cmd_push(args: argparse.Namespace) -> None:
+    _do_push(args, default_conflict="skip-if-same")
+
+
+def cmd_sync(args: argparse.Namespace) -> None:
+    _do_push(args, default_conflict="skip-if-same")
+
+
+def _add_push_args(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument("--src", required=True, help="local file or directory to upload")
+    sp.add_argument("--dest", default="", help="alidocs folder link (or use --create-dest)")
+    sp.add_argument("--create-dest", default="",
+                    help="auto-create folder path under an existing link, e.g. "
+                         "'<folder-link>::sub/dir/leaf' (also accepts a plain "
+                         "'<folder-link>/sub/dir/leaf')")
+    sp.add_argument("--on-conflict", default="",
+                    choices=("", "skip-if-same", "overwrite", "rename", "error"),
+                    help="how to handle name collisions (default: skip-if-same)")
+    sp.add_argument("--include", action="append", default=[],
+                    help="glob to include (repeatable; default: include all)")
+    sp.add_argument("--exclude", action="append", default=[],
+                    help=f"glob to exclude (repeatable; default: {' '.join(DEFAULT_EXCLUDES)})")
+    sp.add_argument("--max-size", type=int, default=0,
+                    help="skip files larger than this many bytes")
+    sp.add_argument("--prune", action="store_true",
+                    help="recycle remote dentries with no local counterpart")
+    sp.add_argument("--dry-run", "-n", action="store_true",
+                    help="print plan and exit without writing")
+    sp.add_argument("--yes", "-y", action="store_true",
+                    help="apply without confirmation prompt")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Download alidocs / DingTalk docs from a link")
     p.add_argument("--profile", default="", help="config profile (else ALIDOCS_PROFILE / default_profile)")
@@ -295,6 +589,14 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("check", help="verify cookie + resolve the node (no download)")
     c.add_argument("--url", required=True)
     c.set_defaults(func=cmd_check)
+
+    ph = sub.add_parser("push", help="upload local file/dir to an alidocs folder")
+    _add_push_args(ph)
+    ph.set_defaults(func=cmd_push)
+
+    sy = sub.add_parser("sync", help="one-way sync local → alidocs (same as push, see --prune)")
+    _add_push_args(sy)
+    sy.set_defaults(func=cmd_sync)
 
     return p
 
